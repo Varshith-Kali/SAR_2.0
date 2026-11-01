@@ -1,0 +1,272 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --bg-canvas: #fafafa;
+    --bg-surface: #ffffff;
+    --bg-muted: #f4f4f5;
+    --border-hairline: #e4e4e7;
+    --text-primary: #09090b;
+    --text-secondary: #3f3f46;
+    --text-muted: #71717a;
+    --accent-obsidian: #09090b;
+    --accent-obsidian-hover: #27272a;
+    --accent-obsidian-tint: #f4f4f5;
+    --accent-obsidian-border: #d4d4d8;
+    --font-display: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-sans: 'Public Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+
+  .dark {
+    color-scheme: dark;
+    --bg-canvas: #09090b;
+    --bg-surface: #121215;
+    --bg-muted: #18181b;
+    --border-hairline: #27272a;
+    --text-primary: #fafafa;
+    --text-secondary: #d4d4d8;
+    --text-muted: #a1a1aa;
+    --accent-obsidian: #fafafa;
+    --accent-obsidian-hover: #ffffff;
+    --accent-obsidian-tint: rgba(244, 244, 245, 0.12);
+    --accent-obsidian-border: rgba(212, 212, 216, 0.35);
+  }
+
+  html {
+    scroll-behavior: smooth;
+    overflow-x: clip;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: auto;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: clip;
+    overscroll-behavior-y: auto;
+    transition: background-color 200ms cubic-bezier(0.16, 1, 0.3, 1),
+                color 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+    text-wrap: balance;
+  }
+
+  code, pre, .font-mono, .tabular-nums {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  table td, table th {
+    font-variant-numeric: tabular-nums;
+  }
+
+  input, select, textarea {
+    transition: border-color 150ms cubic-bezier(0.16, 1, 0.3, 1),
+                background-color 150ms cubic-bezier(0.16, 1, 0.3, 1),
+                color 150ms cubic-bezier(0.16, 1, 0.3, 1),
+                box-shadow 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  button {
+    transition: border-color 150ms cubic-bezier(0.16, 1, 0.3, 1),
+                background-color 150ms cubic-bezier(0.16, 1, 0.3, 1),
+                color 150ms cubic-bezier(0.16, 1, 0.3, 1),
+                box-shadow 180ms cubic-bezier(0.16, 1, 0.3, 1),
+                transform 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+}
+
+/* ============================================================================
+ * GLASS-MORPHISM GLOW ARCHITECTURE (Light & Dark Adaptive Depth)
+ * Used on Request Basics & Preliminary Checklist intake cards, option cards,
+ * and stage/step navigation buttons to create tactile depth on hover.
+ * ============================================================================ */
+
+.sar-glass-card {
+  position: relative;
+  will-change: transform;
+  background-color: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  box-shadow:
+    0 2px 12px -2px rgba(9, 9, 11, 0.04),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.9);
+  transition:
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.sar-glass-card:hover {
+  background-color: rgba(255, 255, 255, 0.96);
+  border-color: rgba(24, 24, 27, 0.32);
+  transform: translateY(-1.5px);
+  box-shadow:
+    0 14px 34px -8px rgba(9, 9, 11, 0.10),
+    0 0 24px 0 rgba(16, 185, 129, 0.09),
+    0 0 0 1px rgba(24, 24, 27, 0.08),
+    inset 0 1px 0 0 rgba(255, 255, 255, 1);
+}
+
+.dark .sar-glass-card {
+  background-color: rgba(24, 24, 27, 0.78);
+  box-shadow:
+    0 4px 18px -2px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+}
+
+.dark .sar-glass-card:hover {
+  background-color: rgba(28, 28, 33, 0.9);
+  border-color: rgba(161, 161, 170, 0.45);
+  transform: translateY(-1.5px);
+  box-shadow:
+    0 16px 38px -8px rgba(0, 0, 0, 0.7),
+    0 0 28px -2px rgba(16, 185, 129, 0.15),
+    0 0 0 1px rgba(255, 255, 255, 0.12),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.18);
+}
+
+/* Interactive Option Cards (CMDB Apps, Preliminary P1-P30 Options, Roadmap Cards) */
+.sar-glass-option {
+  position: relative;
+  will-change: transform;
+  backdrop-filter: blur(12px) saturate(145%);
+  -webkit-backdrop-filter: blur(12px) saturate(145%);
+  box-shadow:
+    0 1px 4px rgba(9, 9, 11, 0.03),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.75);
+  transition:
+    transform 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.sar-glass-option:hover:not(:disabled) {
+  box-shadow:
+    0 2px 6px -1px rgba(9, 9, 11, 0.05),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.85);
+}
+
+.dark .sar-glass-option {
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+}
+
+.dark .sar-glass-option:hover:not(:disabled) {
+  box-shadow:
+    0 2px 8px -1px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
+}
+
+/* Interactive Step Buttons (Stage Rail Buttons, Stepper Pills, Next/Prev Stage CTAs) */
+.sar-glass-step-btn {
+  position: relative;
+  will-change: transform;
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  transition:
+    transform 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.sar-glass-step-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow:
+    0 8px 20px -4px rgba(9, 9, 11, 0.14),
+    0 0 16px 0 rgba(16, 185, 129, 0.14),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.45);
+}
+
+.dark .sar-glass-step-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow:
+    0 8px 22px -4px rgba(0, 0, 0, 0.7),
+    0 0 18px 0 rgba(16, 185, 129, 0.22),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.22);
+}
+
+.bg-studio-grid {
+  background-size: 38px 38px;
+  background-attachment: fixed;
+  background-image:
+    linear-gradient(to right, rgba(9, 9, 11, 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(9, 9, 11, 0.045) 1px, transparent 1px);
+}
+
+.dark .bg-studio-grid {
+  background-size: 38px 38px;
+  background-attachment: fixed;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+}
+
+/* Clean, responsive slim scrollbar for page and overflow panels */
+html,
+body,
+.custom-slim-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(161, 161, 170, 0.45) transparent;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+.custom-slim-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+html::-webkit-scrollbar-track,
+body::-webkit-scrollbar-track,
+.custom-slim-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html::-webkit-scrollbar-thumb,
+body::-webkit-scrollbar-thumb,
+.custom-slim-scroll::-webkit-scrollbar-thumb {
+  background: rgba(161, 161, 170, 0.45);
+  border-radius: 9999px;
+}
+
+html::-webkit-scrollbar-thumb:hover,
+body::-webkit-scrollbar-thumb:hover,
+.custom-slim-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(113, 113, 122, 0.7);
+}
+
+/* Utility to hide horizontal scrollbars on single-row pill strips */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "SAR Navigator",
+  "description": "Enterprise Security Architecture Review (SAR) Intake Platform and Deterministic Rules Engine with dynamic checklist routing, repeater table editors, contradiction checks, and audit-ready exports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
