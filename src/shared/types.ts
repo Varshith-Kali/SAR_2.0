@@ -524,8 +524,10 @@ export interface RevisionSnapshot {
 }
 
 export interface SarAiStageHighlight {
-  stageOrModule: string;
+  stageOrModule?: string;
+  stageTitle: string;
   summary: string;
+  keySelections: string[];
 }
 
 export interface SarAiObservation {
@@ -539,6 +541,14 @@ export interface SarAiObservation {
 export interface SarAiSummaryResult {
   generatedAt: string;
   model: string;
+  projectName?: string;
+  sarDisplayId?: string;
+  businessUnit?: string;
+  scopeChecklistCount?: {
+    preliminaryAnswered: number;
+    detailedAnswered: number;
+    activeModulesCount: number;
+  };
   executiveSummary: string;
   changeScopeAndArchitecture: string;
   overallRiskPosture: 'Low' | 'Moderate' | 'Elevated' | 'High' | 'Critical';

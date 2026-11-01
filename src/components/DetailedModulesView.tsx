@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertCircle,
@@ -144,7 +144,31 @@ export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
   const evalRes = sar.evaluation;
   const activeModules = evalRes?.activeModules || [];
   const isReadOnly = sar.status === 'submitted';
-  const flowGates = evaluateFlowGates(sar, definition);
+  const flowGates = useMemo(() => evaluateFlowGates(sar, definition), [sar, definition]);
+
+  const checklistModules = useMemo(
+    () => activeModules.filter((m) => m.code !== 'M0'),
+    [activeModules]
+  );
+  const currentModInfo =
+    checklistModules.find((m) => m.code === activeModule) ||
+    checklistModules[0];
+
+  // Smooth scroll to top and reset transient popovers when switching modules
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setActiveHelpQId(null);
+    setModuleGateError(null);
+  }, [currentModInfo?.code]);
+
+  const scrollToMissingQuestion = (questionId: string) => {
+    window.setTimeout(() => {
+      const el =
+        document.getElementById(`question-${questionId}`) ||
+        document.querySelector(`[data-question-code="${questionId}"]`);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 60);
+  };
 
   const tryProceedToReview = () => {
     if (!flowGates.modulesComplete && !isReadOnly) {
@@ -153,8 +177,11 @@ export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
         `${flowGates.missingDetailedQuestions.length} required checklist question(s) remaining before Review & Submit.`
       );
       setTimeout(() => setModuleGateError(null), 3500);
-      if (firstMissing && firstMissing.moduleId !== currentModInfo?.code) {
-        onSelectModule(firstMissing.moduleId);
+      if (firstMissing) {
+        if (firstMissing.moduleId !== currentModInfo?.code) {
+          onSelectModule(firstMissing.moduleId);
+        }
+        scrollToMissingQuestion(firstMissing.code);
       }
       return;
     }
@@ -162,42 +189,63 @@ export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
     onProceedToReview();
   };
 
-  const checklistModules = activeModules.filter((m) => m.code !== 'M0');
-  const currentModInfo =
-    checklistModules.find((m) => m.code === activeModule) ||
-    checklistModules[0];
-
-  const visibleQIds = new Set(evalRes?.visibleQuestionIds || []);
-  const requiredQIds = new Set(evalRes?.requiredQuestionIds || []);
-  const hardRequiredQIds = new Set(evalRes?.hardRequiredQuestionIds || []);
+  const visibleQIds = useMemo(() => new Set(evalRes?.visibleQuestionIds || []), [evalRes?.visibleQuestionIds]);
+  const requiredQIds = useMemo(() => new Set(evalRes?.requiredQuestionIds || []), [evalRes?.requiredQuestionIds]);
+  const hardRequiredQIds = useMemo(() => new Set(evalRes?.hardRequiredQuestionIds || []), [evalRes?.hardRequiredQuestionIds]);
 
   const currentModDef = definition.modules.find((m) => m.code === currentModInfo?.code);
-  const allModuleQuestions = definition.questions.filter(
-    (q) => q.stage === undefined && q.moduleId === currentModInfo?.code
+  const allModuleQuestions = useMemo(
+    () =>
+      definition.questions.filter(
+        (q) => q.stage === undefined && q.moduleId === currentModInfo?.code
+      ),
+    [definition.questions, currentModInfo?.code]
   );
-  const visibleModuleQuestions = allModuleQuestions.filter((q) => visibleQIds.has(q.id));
-  const moduleQuestions = visibleModuleQuestions.filter((q) => {
-    if (questionFilter === 'mandatory') {
-      return requiredQIds.has(q.id) || hardRequiredQIds.has(q.id);
-    }
-    if (questionFilter === 'unanswered') {
-      const v = sar.answers[q.id]?.value;
-      return v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
-    }
-    return true;
-  });
+  const visibleModuleQuestions = useMemo(
+    () => allModuleQuestions.filter((q) => visibleQIds.has(q.id)),
+    [allModuleQuestions, visibleQIds]
+  );
+  const moduleQuestions = useMemo(
+    () =>
+      visibleModuleQuestions.filter((q) => {
+        if (questionFilter === 'mandatory') {
+          return requiredQIds.has(q.id) || hardRequiredQIds.has(q.id);
+        }
+        if (questionFilter === 'unanswered') {
+          const v = sar.answers[q.id]?.value;
+          return v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
+        }
+        return true;
+      }),
+    [visibleModuleQuestions, questionFilter, requiredQIds, hardRequiredQIds, sar.answers]
+  );
 
-  // Filter options by hosting facts (Section 5.1: On-Prem vs Cloud vs Hybrid)
+  // Filter options dynamically by hosting topology (On-Prem vs Cloud vs Hybrid) while preserving any active selection
   const filterOptionsByHosting = (q: QuestionDefinition) => {
     if (!q.options) return [];
-    const onPrem = evalRes?.flags.on_prem_hosted;
-    const cloud = evalRes?.flags.cloud_hosted;
-    return q.options.filter((opt) => {
+    const onPrem = Boolean(evalRes?.flags.on_prem_hosted);
+    const cloud = Boolean(evalRes?.flags.cloud_hosted);
+    if (!onPrem && !cloud) return q.options;
+
+    const currentRaw = sar.answers[q.id]?.value;
+    const selectedSet = new Set(
+      Array.isArray(currentRaw)
+        ? currentRaw.map(String)
+        : currentRaw !== undefined && currentRaw !== null && currentRaw !== ''
+        ? [String(currentRaw)]
+        : []
+    );
+
+    const filtered = q.options.filter((opt) => {
       if (!opt.hostingFilter || opt.hostingFilter.length === 0) return true;
+      if (selectedSet.has(opt.id)) return true;
       if (onPrem && opt.hostingFilter.includes('on_prem')) return true;
       if (cloud && opt.hostingFilter.includes('cloud')) return true;
-      return true;
+      if ((cloud || Boolean(evalRes?.flags.vendor_involved)) && opt.hostingFilter.includes('saas')) return true;
+      return false;
     });
+
+    return filtered.length > 0 ? filtered : q.options;
   };
 
   const handleFileUpload = async (
@@ -487,8 +535,11 @@ export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
                   onClick={() => {
                     const nextMissing = flowGates.missingDetailedQuestions[0];
                     if (nextMissing) {
-                      onSelectModule(nextMissing.moduleId);
-                      setQuestionFilter('unanswered');
+                      if (nextMissing.moduleId !== currentModInfo?.code) {
+                        onSelectModule(nextMissing.moduleId);
+                      }
+                      setQuestionFilter('all');
+                      scrollToMissingQuestion(nextMissing.code);
                     }
                   }}
                   className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-zinc-950 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 text-white text-[11px] font-semibold cursor-pointer whitespace-nowrap shrink-0"
@@ -650,6 +701,46 @@ export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
                 </div>
               )}
 
+              {moduleQuestions.length === 0 && visibleModuleQuestions.length > 0 && (
+                <div className="p-6 rounded-2xl border border-zinc-200/90 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-center space-y-3 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+                  <div className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300">
+                    <Check className="w-4 h-4" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="font-display font-bold text-sm text-zinc-950 dark:text-white">
+                      {questionFilter === 'unanswered'
+                        ? `All ${visibleModuleQuestions.length} question(s) in ${currentModInfo?.shortTitle} are answered!`
+                        : `No matching questions for "${questionFilter}" filter in this section.`}
+                    </h3>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                      Switch back to All Questions to review or edit your responses, or continue to the next section.
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setQuestionFilter('all')}
+                      className="px-4 py-1.5 rounded-full bg-zinc-950 text-white dark:bg-zinc-100 dark:text-zinc-900 text-xs font-semibold cursor-pointer"
+                    >
+                      Show All Questions ({visibleModuleQuestions.length})
+                    </button>
+                    {nextMod && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQuestionFilter('all');
+                          onSelectModule(nextMod.code);
+                        }}
+                        className="inline-flex items-center gap-1 px-4 py-1.5 rounded-full border border-zinc-300 dark:border-zinc-700 text-xs font-semibold text-zinc-800 dark:text-zinc-200 hover:border-zinc-950 cursor-pointer"
+                      >
+                        <span>Next: {nextMod.shortTitle}</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {moduleQuestions.map((q, qIdx) => {
                 const ans = sar.answers[q.id];
                 const rawVal = ans?.value;
@@ -661,6 +752,8 @@ export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
                 return (
                   <div
                     key={q.id}
+                    id={`question-${q.id}`}
+                    data-question-code={q.code}
                     className="sar-glass-card p-5 sm:p-6 rounded-2xl border border-zinc-200/90 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-[0_2px_10px_rgba(0,0,0,0.02)] relative"
                   >
                     <div className="flex items-center justify-between gap-2 mb-2 text-xs text-zinc-500 dark:text-zinc-400">
@@ -861,9 +954,21 @@ export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
                             : [];
                           const isSelected = selectedArr.includes(opt.id);
                           const toggleMultiOpt = () => {
+                            if (opt.exclusive) {
+                              onAnswerQuestion(
+                                q.id,
+                                isSelected ? [] : [opt.id],
+                                { comment: ans?.comment }
+                              );
+                              return;
+                            }
+                            const exclusiveIds = new Set(
+                              filteredOptions.filter((o) => o.exclusive).map((o) => o.id)
+                            );
+                            const cleaned = selectedArr.filter((id) => !exclusiveIds.has(id));
                             const next = isSelected
-                              ? selectedArr.filter((id) => id !== opt.id)
-                              : [...selectedArr, opt.id];
+                              ? cleaned.filter((id) => id !== opt.id)
+                              : [...cleaned, opt.id];
                             onAnswerQuestion(q.id, next, { comment: ans?.comment });
                           };
                           return (
@@ -941,7 +1046,7 @@ export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
                           disabled={isReadOnly}
                           value={ans?.comment || ''}
                           onChange={(e) =>
-                            onAnswerQuestion(q.id, rawVal ?? '', { comment: e.target.value })
+                            onAnswerQuestion(q.id, rawVal, { comment: e.target.value })
                           }
                           placeholder="Add specific architecture notes, tool names, or implementation details..."
                           className="w-full px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/60 text-xs text-zinc-800 dark:text-zinc-200 focus:outline-none focus:border-zinc-950 dark:focus:border-zinc-400 transition-colors"

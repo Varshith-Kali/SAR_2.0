@@ -1262,7 +1262,7 @@ function bootstrapHistoricalSubmittedCorpus(store: SarPatternLearningStore): voi
       businessUnit: 'Wealth & Private Banking',
       base: baseSample0,
       answerOverrides: {
-        P5: 'cloud',
+        P5: 'bank_aws',
         P28: 'yes_bank_hosted',
         M15_Q1: 'private_llm_guardrails',
         M15_Q2: 'read_only_rag',
@@ -1285,7 +1285,7 @@ function bootstrapHistoricalSubmittedCorpus(store: SarPatternLearningStore): voi
       businessUnit: 'Enterprise Data & AI Platform',
       base: baseSample0,
       answerOverrides: {
-        P5: 'cloud',
+        P5: 'bank_aws',
         P27: 'yes',
         P28: 'yes_bank_hosted',
         M13_Q1: 'tls_dms_sha256_recon',
@@ -1347,7 +1347,7 @@ function bootstrapHistoricalSubmittedCorpus(store: SarPatternLearningStore): voi
       businessUnit: 'Corporate & Treasury Banking',
       base: baseSample0,
       answerOverrides: {
-        P5: 'cloud',
+        P5: 'bank_aws',
         M10_Q2: 'signed_non_root_k8s',
       },
     },

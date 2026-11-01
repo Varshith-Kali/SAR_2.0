@@ -2640,9 +2640,7 @@ function extractVal(answers: Record<string, AnswerEntry | unknown>, key: string)
   const entry = answers[key];
   if (entry === undefined || entry === null) return undefined;
   if (typeof entry === 'object' && entry !== null && 'value' in entry) {
-    const typed = entry as AnswerEntry;
-    if (typed.state === 'inactive') return undefined;
-    return typed.value;
+    return (entry as AnswerEntry).value;
   }
   return entry;
 }

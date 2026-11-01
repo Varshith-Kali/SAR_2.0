@@ -558,11 +558,6 @@ async function startServer() {
   });
 
   /**
-   * POST /api/patterns/ai-reasoning
-   * Invokes OpenAI `gpt-5.5` (with user's ephemeral key, `store: false`, zero fallbacks)
-   * to perform deep AI reasoning over the request's Pattern Genome and Learned Corpus Priors.
-   */
-  /**
    * GET /api/security/audit
    * Runs live self-verification of OWASP security controls: SQLi, NoSQLi, XSS/XXE,
    * Prototype Pollution, SSRF/Path Traversal, Secret Redaction, and Pattern Submission Gate.

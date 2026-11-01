@@ -355,7 +355,9 @@ export function generateExcelWorkbookXML(
           makeStyledXmlRow(
             [
               {
-                value: `SECTION 1B: AI ARCHITECTURE REVIEW SUMMARY (${sar.aiSummary.overallRiskPosture.toUpperCase()})`,
+                value: `SECTION 1B: AI ARCHITECTURE REVIEW SUMMARY — TAGGED TO "${
+                  sar.aiSummary.projectName || sar.basics.projectName || sar.displayId
+                }" (${sar.aiSummary.overallRiskPosture.toUpperCase()})`,
                 styleId: 'SectionBanner',
                 mergeAcross: 4,
               },
@@ -363,19 +365,65 @@ export function generateExcelWorkbookXML(
             24
           ),
           makeStyledXmlRow([
-            { value: 'Executive Summary', styleId: 'SubHeader' },
+            { value: 'Tagged Project / Request Name', styleId: 'SubHeader' },
+            { value: sar.displayId, styleId: 'CodeCell' },
+            {
+              value: `${sar.aiSummary.projectName || sar.basics.projectName || sar.displayId} (${
+                sar.aiSummary.businessUnit || sar.basics.businessUnit || 'Enterprise Banking'
+              })`,
+              styleId: 'AnswerCell',
+              mergeAcross: 2,
+            },
+          ]),
+          makeStyledXmlRow([
+            { value: 'Executive Summary (What This Review Is About)', styleId: 'SubHeader' },
             { value: 'Overview', styleId: 'CodeCell' },
             { value: sar.aiSummary.executiveSummary, styleId: 'AnswerCell', mergeAcross: 2 },
           ]),
           makeStyledXmlRow([
-            { value: 'Architecture Scope', styleId: 'SubHeader' },
-            { value: 'Summary', styleId: 'CodeCell' },
+            { value: 'Change Scope & Architecture', styleId: 'SubHeader' },
+            { value: 'Scope', styleId: 'CodeCell' },
             {
               value: sar.aiSummary.changeScopeAndArchitecture,
               styleId: 'Body',
               mergeAcross: 2,
             },
           ]),
+          ...(sar.aiSummary.stageHighlights.length > 0
+            ? [
+                makeStyledXmlRow([
+                  { value: 'Checklist Scope & Major Control Points', styleId: 'SubHeader' },
+                  { value: 'Highlights', styleId: 'CodeCell' },
+                  {
+                    value: sar.aiSummary.stageHighlights
+                      .map(
+                        (h) =>
+                          `${h.stageTitle}: ${h.summary}${
+                            h.keySelections && h.keySelections.length > 0
+                              ? ` [${h.keySelections.join('; ')}]`
+                              : ''
+                          }`
+                      )
+                      .join(' | '),
+                    styleId: 'Body',
+                    mergeAcross: 2,
+                  },
+                ]),
+              ]
+            : []),
+          ...(sar.aiSummary.recommendedReviewerFocus.length > 0
+            ? [
+                makeStyledXmlRow([
+                  { value: 'Priority Reviewer Focus', styleId: 'SubHeader' },
+                  { value: 'Sign-Off Focus', styleId: 'CodeCell' },
+                  {
+                    value: sar.aiSummary.recommendedReviewerFocus.join(' | '),
+                    styleId: 'BodyAlt',
+                    mergeAcross: 2,
+                  },
+                ]),
+              ]
+            : []),
         ]
       : []),
     makeStyledXmlRow([{ value: '', styleId: 'Body', mergeAcross: 4 }], 10),
@@ -796,16 +844,40 @@ export function generatePrintableReportHTML(
   ${
     sar.aiSummary
       ? `
-  <h2>1B. AI Security Architecture Review Summary (${escapeHtml(sar.aiSummary.model)} · Posture: ${escapeHtml(
+  <h2>1B. AI Security Architecture Review Summary — Tagged to "${escapeHtml(
+          sar.aiSummary.projectName || sar.basics.projectName || sar.displayId
+        )}" (${escapeHtml(sar.aiSummary.model)} · Posture: ${escapeHtml(
           sar.aiSummary.overallRiskPosture
         )})</h2>
-  <p><strong>1. Executive Summary of Application / Change:</strong> ${escapeHtml(sar.aiSummary.executiveSummary)}</p>
-  <p><strong>2. Architectural Scope, Hosting &amp; Trust Boundaries:</strong> ${escapeHtml(
+  <p><strong>Tagged Project / Request Name:</strong> ${escapeHtml(
+    sar.aiSummary.projectName || sar.basics.projectName || sar.displayId
+  )} (${escapeHtml(sar.displayId)} · ${escapeHtml(
+          sar.aiSummary.businessUnit || sar.basics.businessUnit || 'Enterprise Banking'
+        )})</p>
+  <p><strong>1. What This SAR Review Is About (Executive Summary):</strong> ${escapeHtml(
+    sar.aiSummary.executiveSummary
+  )}</p>
+  <p><strong>2. Architectural Scope, Hosting, Data Flows &amp; Trust Boundaries:</strong> ${escapeHtml(
     sar.aiSummary.changeScopeAndArchitecture
   )}</p>
   ${
+    sar.aiSummary.stageHighlights.length > 0
+      ? `<p><strong>3. Checklist Scope &amp; Major Security Control Points Covered:</strong></p>
+  <ul>${sar.aiSummary.stageHighlights
+    .map(
+      (item) =>
+        `<li><strong>${escapeHtml(item.stageTitle)}:</strong> ${escapeHtml(item.summary)}${
+          item.keySelections && item.keySelections.length > 0
+            ? ` — <em>${escapeHtml(item.keySelections.join(' · '))}</em>`
+            : ''
+        }</li>`
+    )
+    .join('')}</ul>`
+      : ''
+  }
+  ${
     sar.aiSummary.recommendedReviewerFocus.length > 0
-      ? `<p><strong>3. Priority Focus Areas for ISG Security Reviewer Sign-Off:</strong></p>
+      ? `<p><strong>4. Priority Verification Focus for ISG Security Reviewer Sign-Off:</strong></p>
   <ul>${sar.aiSummary.recommendedReviewerFocus
     .map((item) => `<li>${escapeHtml(item)}</li>`)
     .join('')}</ul>`

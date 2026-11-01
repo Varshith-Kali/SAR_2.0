@@ -245,6 +245,18 @@ function getRawAnswerValue(
   return entry;
 }
 
+function getStoredAnswerValue(
+  answers: Record<string, AnswerEntry | unknown>,
+  questionId: string
+): unknown {
+  const entry = answers[questionId];
+  if (entry === undefined || entry === null) return undefined;
+  if (typeof entry === 'object' && entry !== null && 'value' in entry) {
+    return (entry as AnswerEntry).value;
+  }
+  return entry;
+}
+
 export function evaluateCondition(
   node: ConditionNode | undefined,
   answers: Record<string, AnswerEntry | unknown>,
@@ -432,15 +444,30 @@ export function evaluateSAR(
   triggerModule('M17', 'Always included: supporting architecture and data-flow diagrams.');
 
   // Step 1: Collect facts, module triggers, and question triggers from Preliminary Answers
+  // Resolve visibility in topological order into `effectiveAnswers` so any re-unlocked child/grandchild
+  // question immediately restores its stored answer in a single pass while hidden questions are excluded.
   let unknownCount = 0;
+  const effectiveAnswers: Record<string, unknown> = {};
   const prelimQuestions = definition.questions.filter((q) => q.stage !== undefined);
+  const prelimIds = new Set(prelimQuestions.map((pq) => pq.id));
+
+  for (const key of Object.keys(answersInput)) {
+    if (!prelimIds.has(key) && !key.includes('_Q')) {
+      const directVal = getStoredAnswerValue(answersInput, key);
+      if (directVal !== undefined) {
+        effectiveAnswers[key] = directVal;
+      }
+    }
+  }
 
   for (const q of prelimQuestions) {
-    const isVisible = evaluateCondition(q.showOnlyIf, answersInput, facts, flags);
+    const isVisible = evaluateCondition(q.showOnlyIf, effectiveAnswers, facts, flags);
     if (!isVisible) continue;
 
-    const val = getRawAnswerValue(answersInput, q.id);
+    const val = getStoredAnswerValue(answersInput, q.id);
     if (val === undefined || val === null || val === '') continue;
+
+    effectiveAnswers[q.id] = val;
 
     if (val === 'not_sure') {
       unknownCount++;
@@ -499,22 +526,22 @@ export function evaluateSAR(
   }
 
   // Step 2: Compute Derived Flags in DAG Dependency Order
-  const p5 = getRawAnswerValue(answersInput, 'P5');
-  const p7 = getRawAnswerValue(answersInput, 'P7');
-  const p8 = (getRawAnswerValue(answersInput, 'P8') as string[]) || [];
-  const p10 = (getRawAnswerValue(answersInput, 'P10') as string[]) || [];
-  const p11 = (getRawAnswerValue(answersInput, 'P11') as string[]) || [];
-  const p13 = getRawAnswerValue(answersInput, 'P13');
-  const p14 = (getRawAnswerValue(answersInput, 'P14') as string[]) || [];
-  const p15 = getRawAnswerValue(answersInput, 'P15');
-  const p16 = getRawAnswerValue(answersInput, 'P16');
-  const p18 = getRawAnswerValue(answersInput, 'P18');
-  const p20 = getRawAnswerValue(answersInput, 'P20');
-  const p21 = (getRawAnswerValue(answersInput, 'P21') as string[]) || [];
-  const p24 = getRawAnswerValue(answersInput, 'P24');
-  const p26 = (getRawAnswerValue(answersInput, 'P26') as string[]) || [];
-  const p28 = getRawAnswerValue(answersInput, 'P28');
-  const p29 = getRawAnswerValue(answersInput, 'P29');
+  const p5 = effectiveAnswers['P5'];
+  const p7 = effectiveAnswers['P7'];
+  const p8 = (effectiveAnswers['P8'] as string[]) || [];
+  const p10 = (effectiveAnswers['P10'] as string[]) || [];
+  const p11 = (effectiveAnswers['P11'] as string[]) || [];
+  const p13 = effectiveAnswers['P13'];
+  const p14 = (effectiveAnswers['P14'] as string[]) || [];
+  const p15 = effectiveAnswers['P15'];
+  const p16 = effectiveAnswers['P16'];
+  const p18 = effectiveAnswers['P18'];
+  const p20 = effectiveAnswers['P20'];
+  const p21 = (effectiveAnswers['P21'] as string[]) || [];
+  const p24 = effectiveAnswers['P24'];
+  const p26 = (effectiveAnswers['P26'] as string[]) || [];
+  const p28 = effectiveAnswers['P28'];
+  const p29 = effectiveAnswers['P29'];
 
   flags.on_prem_hosted = p5 === 'bank_dc' || p5 === 'hybrid' || p5 === 'not_decided';
   flags.cloud_hosted =
@@ -567,15 +594,21 @@ export function evaluateSAR(
   flags.api_exposed = p16 === 'yes_gateway' || p16 === 'yes_directly';
   flags.external_ai_present = p28 === 'yes_third_party' || p28 === 'not_sure';
 
-  // Count total 'not_sure' across all answers
+  // Count 'not_sure' across detailed checklist answers (preliminary already counted above)
   for (const key of Object.keys(answersInput)) {
-    const v = getRawAnswerValue(answersInput, key);
+    if (prelimIds.has(key)) continue;
+    const v = getStoredAnswerValue(answersInput, key);
     if (v === 'not_sure') unknownCount++;
   }
   flags.unknown_count_high = unknownCount >= 3;
 
   // Compute deterministic SAR Checklist v5 evaluation (Level 0 -> Level 4) and bind the 7 v5 flags
-  const v5InputState = mapWizardAnswersToSarV5Input(answersInput);
+  const v5BridgeAnswers: Record<string, unknown> = { ...effectiveAnswers };
+  if (flags.cloud_hosted) {
+    const m11q3Val = getStoredAnswerValue(answersInput, 'M11_Q3');
+    if (m11q3Val !== undefined) v5BridgeAnswers['M11_Q3'] = m11q3Val;
+  }
+  const v5InputState = mapWizardAnswersToSarV5Input(v5BridgeAnswers);
   const v5Evaluation = evaluateSarV5(v5InputState);
   flags.public_facing = v5Evaluation.flags.PublicFacing.value;
   flags.sensitive_data_v5 = v5Evaluation.flags.SensitiveData.value;
@@ -589,7 +622,7 @@ export function evaluateSAR(
   const detectedCategoriesMap = new Map<string, { label: string; reason: string; isPrimary: boolean; sourceQuestionIds: string[] }>();
 
   for (const rule of definition.rules) {
-    if (evaluateCondition(rule.condition, answersInput, facts, flags)) {
+    if (evaluateCondition(rule.condition, effectiveAnswers, facts, flags)) {
       if (rule.includeModules) {
         for (const mCode of rule.includeModules) {
           triggerModule(mCode, rule.reasonTemplate);
@@ -624,12 +657,12 @@ export function evaluateSAR(
   }
 
   // Step 3b: Enhancement Scope Narrowing & Override Triggers (Section 6.4 — Highest-Risk Logic)
-  const p1 = (getRawAnswerValue(answersInput, 'P1') as string[]) || [];
-  const p3 = getRawAnswerValue(answersInput, 'P3');
-  const p4 = (getRawAnswerValue(answersInput, 'P4') as string[]) || [];
-  const p12 = getRawAnswerValue(answersInput, 'P12');
-  const p25 = getRawAnswerValue(answersInput, 'P25');
-  const p27 = getRawAnswerValue(answersInput, 'P27');
+  const p1 = (effectiveAnswers['P1'] as string[]) || [];
+  const p3 = effectiveAnswers['P3'];
+  const p4 = (effectiveAnswers['P4'] as string[]) || [];
+  const p12 = effectiveAnswers['P12'];
+  const p25 = effectiveAnswers['P25'];
+  const p27 = effectiveAnswers['P27'];
 
   const isPureEnhancement = Array.isArray(p1) && p1.length === 1 && p1[0] === 'enhancement';
   const isMinorChange = p3 === 'minor';
@@ -745,11 +778,11 @@ export function evaluateSAR(
   for (const q of definition.questions) {
     if (q.stage !== undefined) {
       // Preliminary question (P1..P30)
-      if (evaluateCondition(q.showOnlyIf, answersInput, facts, flags)) {
+      if (evaluateCondition(q.showOnlyIf, effectiveAnswers, facts, flags)) {
         visibleQuestionIds.push(q.id);
         const isReq =
           q.required ||
-          (q.requireIf ? evaluateCondition(q.requireIf, answersInput, facts, flags) : false);
+          (q.requireIf ? evaluateCondition(q.requireIf, effectiveAnswers, facts, flags) : false);
         if (isReq) {
           requiredQuestionIds.push(q.id);
         }
@@ -767,7 +800,7 @@ export function evaluateSAR(
       if (!activeModuleCodes.has(q.moduleId)) continue;
 
       const isManuallyAddedModule = Boolean(manualCategories?.added?.includes(q.moduleId));
-      const conditionPassed = evaluateCondition(q.showOnlyIf, answersInput, facts, flags);
+      const conditionPassed = evaluateCondition(q.showOnlyIf, effectiveAnswers, facts, flags);
       const explicitlyTriggered = questionReasonsMap.has(q.id);
 
       // A detailed question is visible if its showOnlyIf passes, or an option/rule explicitly unlocked it,
@@ -781,6 +814,10 @@ export function evaluateSAR(
       if (!isVisible) continue;
 
       visibleQuestionIds.push(q.id);
+      const dVal = getStoredAnswerValue(answersInput, q.id);
+      if (dVal !== undefined && dVal !== null && dVal !== '') {
+        effectiveAnswers[q.id] = dVal;
+      }
 
       // Collect converged reasons for why this specific question was unlocked
       const reasonsSet = new Set<string>();
@@ -805,12 +842,12 @@ export function evaluateSAR(
       // Evaluate dynamic requirement & hard-requirement status based on risk permutation
       const isHardReq =
         Boolean(q.hardRequired) ||
-        (q.hardRequireIf ? evaluateCondition(q.hardRequireIf, answersInput, facts, flags) : false);
+        (q.hardRequireIf ? evaluateCondition(q.hardRequireIf, effectiveAnswers, facts, flags) : false);
 
       const isReq =
         isHardReq ||
         Boolean(q.required) ||
-        (q.requireIf ? evaluateCondition(q.requireIf, answersInput, facts, flags) : false) ||
+        (q.requireIf ? evaluateCondition(q.requireIf, effectiveAnswers, facts, flags) : false) ||
         ruleRequiredQuestionMap.has(q.id);
 
       if (isHardReq) {
@@ -896,7 +933,7 @@ export function evaluateSAR(
     const qDef = definition.questions.find((q) => q.id === qId);
     if (!qDef) continue;
     const rawEntry = answersInput[qId];
-    const val = getRawAnswerValue(answersInput, qId);
+    const val = effectiveAnswers[qId] ?? getStoredAnswerValue(answersInput, qId);
     const isAnswered =
       val !== undefined &&
       val !== null &&
@@ -985,8 +1022,8 @@ export function evaluateSAR(
   }
 
   // Contradiction 4: Production hosting in scope without DR environment on Tier 1/2 app
-  const p6 = (getRawAnswerValue(answersInput, 'P6') as string[]) || [];
-  const m1q1 = getRawAnswerValue(answersInput, 'M1_Q1');
+  const p6 = (effectiveAnswers['P6'] as string[]) || [];
+  const m1q1 = effectiveAnswers['M1_Q1'];
   if (
     Array.isArray(p6) &&
     p6.includes('production') &&
@@ -1019,6 +1056,19 @@ export function evaluateSAR(
     });
   }
 
+  // Contradiction 6: Card / Payment (PCI) data selected in P21 while P24 indicates outside-India processing/storage
+  if (Array.isArray(p21) && p21.includes('pci') && p24 === 'yes') {
+    contradictions.push({
+      id: 'CONTRA_PCI_CROSS_BORDER',
+      code: 'CHK-06',
+      severity: 'critical',
+      title: 'Card / payment system data (PCI) indicated as leaving India (RBI Data Localization Alert)',
+      explanation:
+        'You selected Card / payment data (PCI) in P21 AND "Yes" for data leaving India in P24. Under RBI Storage of Payment System Data directives, end-to-end payment transaction data must reside exclusively in India.',
+      involvedQuestions: ['P21', 'P24'],
+      moduleCode: 'M4',
+    });
+  }
 
   // Contradiction 7: Direct API exposure without API Gateway on Internet or Sensitive PII/PCI scope
   if (p16 === 'yes_directly' && (flags.internet_facing || flags.pii_or_pci_in_scope)) {
@@ -1037,9 +1087,9 @@ export function evaluateSAR(
   // Minimal Path Gaming Indicator (Section 6.7)
   const minimalPathIndicator =
     p13 === 'no' &&
-    getRawAnswerValue(answersInput, 'P17') === 'no' &&
-    getRawAnswerValue(answersInput, 'P19') === 'no' &&
-    getRawAnswerValue(answersInput, 'P27') === 'no' &&
+    effectiveAnswers['P17'] === 'no' &&
+    effectiveAnswers['P19'] === 'no' &&
+    effectiveAnswers['P27'] === 'no' &&
     p28 === 'no';
 
   const estimatedMinutes = activeModules.reduce((acc, m) => acc + m.estimatedMinutes, 0);
@@ -1462,7 +1512,7 @@ export function evaluateFlowGates(
     let answeredReq = 0;
 
     for (const q of reqQsInStage) {
-      const val = getRawAnswerValue(sar.answers, q.id);
+      const val = getStoredAnswerValue(sar.answers, q.id);
       const isAns =
         val !== undefined &&
         val !== null &&
@@ -1509,7 +1559,7 @@ export function evaluateFlowGates(
     const isReq = requiredSet.has(q.id);
     const isHardReq = hardRequiredSet.has(q.id);
     const entry = sar.answers[q.id];
-    const val = getRawAnswerValue(sar.answers, q.id);
+    const val = getStoredAnswerValue(sar.answers, q.id);
     const isAns =
       val !== undefined &&
       val !== null &&

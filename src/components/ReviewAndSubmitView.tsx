@@ -200,24 +200,39 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
   const handleCopyAiSummary = () => {
     if (!sar.aiSummary) return;
     const s = sar.aiSummary;
+    const taggedProject = s.projectName || sar.basics.projectName || sar.displayId;
+    const stageLines =
+      s.stageHighlights && s.stageHighlights.length > 0
+        ? [
+            ``,
+            `3. CHECKLIST DOMAIN SCOPE & KEY SECURITY CONTROLS (${taggedProject})`,
+            ...s.stageHighlights.flatMap((h) => [
+              `• ${h.stageTitle}: ${h.summary}`,
+              ...h.keySelections.map((k) => `   - ${k}`),
+            ]),
+          ]
+        : [];
     const text = [
       `SAR ASSIST — AI SECURITY ARCHITECTURE REVIEW SUMMARY (${sar.displayId} · Rev ${sar.revisionNo})`,
+      `Tagged Project / Request Name: ${taggedProject}`,
+      `Business Unit: ${s.businessUnit || sar.basics.businessUnit || 'N/A'} | Target Go-Live: ${sar.basics.targetGoLiveDate || 'TBD'}`,
       `Model: OpenAI · ${s.model.toUpperCase()} | Overall Risk Posture: ${s.overallRiskPosture}`,
       ``,
-      `1. EXECUTIVE SUMMARY OF APPLICATION / CHANGE`,
+      `1. EXECUTIVE SUMMARY — WHAT THIS SAR REVIEW IS ABOUT (${taggedProject})`,
       s.executiveSummary,
       ``,
-      `2. ARCHITECTURAL SCOPE, HOSTING & TRUST BOUNDARIES`,
+      `2. REVIEW SCOPE, ARCHITECTURE, ACCESS MODEL & SECURITY CONTROLS`,
       s.changeScopeAndArchitecture,
+      ...stageLines,
       ``,
-      `3. PRIORITY FOCUS AREAS FOR ISG SECURITY REVIEWER SIGN-OFF`,
+      `4. PRIORITY FOCUS AREAS FOR ISG SECURITY REVIEWER SIGN-OFF`,
       ...s.recommendedReviewerFocus.map((f, i) => `${i + 1}. ${f}`),
     ].join('\n');
 
     navigator.clipboard?.writeText(text);
     setCopiedSummary(true);
     window.setTimeout(() => setCopiedSummary(false), 2000);
-    onNotify?.('AI Summary Copied', 'Copied formatted SAR AI Summary to clipboard.', 'success');
+    onNotify?.('AI Summary Copied', `Copied AI SAR Summary tagged to "${taggedProject}".`, 'success');
   };
 
   const handleVerifyIntegrity = async () => {
@@ -262,36 +277,39 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
   const evalRes = sar.evaluation;
   const isSubmitted = sar.status === 'submitted';
   const contradictions = evalRes?.contradictions || [];
-  const flowGates = evaluateFlowGates(sar, definition);
+  const flowGates = useMemo(() => evaluateFlowGates(sar, definition), [sar, definition]);
 
   const priorSnapshot =
     sar.revisionHistory.length > 0
       ? sar.revisionHistory[sar.revisionHistory.length - 1]
       : undefined;
 
-  const revisionDiffs: { code: string; label: string; before: string; after: string }[] = [];
-  if (priorSnapshot && sar.revisionNo > priorSnapshot.revisionNo) {
-    if (priorSnapshot.basics.projectName !== sar.basics.projectName) {
-      revisionDiffs.push({
-        code: 'M0.Name',
-        label: 'Project Name',
-        before: priorSnapshot.basics.projectName,
-        after: sar.basics.projectName,
-      });
-    }
-    for (const q of definition.questions) {
-      const prevVal = priorSnapshot.answers[q.id]?.value;
-      const curVal = sar.answers[q.id]?.value;
-      if (JSON.stringify(prevVal) !== JSON.stringify(curVal)) {
-        revisionDiffs.push({
-          code: q.code,
-          label: q.text,
-          before: formatAnswerForDisplay(q, prevVal),
-          after: formatAnswerForDisplay(q, curVal),
+  const revisionDiffs = useMemo(() => {
+    const diffs: { code: string; label: string; before: string; after: string }[] = [];
+    if (priorSnapshot && sar.revisionNo > priorSnapshot.revisionNo) {
+      if (priorSnapshot.basics.projectName !== sar.basics.projectName) {
+        diffs.push({
+          code: 'M0.Name',
+          label: 'Project Name',
+          before: priorSnapshot.basics.projectName,
+          after: sar.basics.projectName,
         });
       }
+      for (const q of definition.questions) {
+        const prevVal = priorSnapshot.answers[q.id]?.value;
+        const curVal = sar.answers[q.id]?.value;
+        if (JSON.stringify(prevVal) !== JSON.stringify(curVal)) {
+          diffs.push({
+            code: q.code,
+            label: q.text,
+            before: formatAnswerForDisplay(q, prevVal),
+            after: formatAnswerForDisplay(q, curVal),
+          });
+        }
+      }
     }
-  }
+    return diffs;
+  }, [priorSnapshot, sar.revisionNo, sar.basics.projectName, sar.answers, definition.questions]);
 
   const answeredPrelimCount = workbookData.preliminaryRows.length;
   const answeredSecurityCount = workbookData.securityQuestionnaireRows.length;
@@ -543,38 +561,42 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
         {/* Body Content: Either Generated AI Summary or Ready-to-Generate State */}
         {sar.aiSummary ? (
           <div className="p-5 sm:p-6 space-y-4">
-            {/* Project / Request Name Header */}
-            {sar.basics.projectName && (
-              <div className="flex flex-wrap items-center gap-3 pb-3 border-b border-zinc-100 dark:border-zinc-800">
-                <div>
-                  <div className="text-[11px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-0.5">
-                    Project / Request
-                  </div>
-                  <div className="text-base font-bold text-zinc-900 dark:text-white leading-snug">
-                    {sar.basics.projectName}
-                  </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-2 ml-auto shrink-0">
-                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700">
+            {/* Project / Request Name Tag Header */}
+            <div className="flex flex-wrap items-center gap-3 pb-3.5 border-b border-zinc-200/80 dark:border-zinc-800">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-600/10 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300 font-mono text-[10px] font-bold uppercase tracking-wider border border-emerald-500/20">
+                    Tagged to Project / Request Name
+                  </span>
+                  <span className="font-mono text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">
                     {sar.displayId} · Rev {sar.revisionNo}
                   </span>
-                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 border border-zinc-200 dark:border-zinc-700">
-                    {sar.basics.businessUnit || 'Business Unit N/A'}
-                  </span>
-                  {sar.aiSummary.generatedAt && (
-                    <span className="font-mono text-[11px] text-zinc-400">
-                      Summary generated {sar.aiSummary.generatedAt.slice(0, 10)}
-                    </span>
-                  )}
+                </div>
+                <div className="text-base sm:text-lg font-display font-bold text-zinc-900 dark:text-white leading-snug">
+                  {sar.aiSummary.projectName || sar.basics.projectName || sar.displayId}
                 </div>
               </div>
-            )}
-            {/* Top Executive Cards */}
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <span className="px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700">
+                  {sar.aiSummary.businessUnit || sar.basics.businessUnit || 'Business Unit N/A'}
+                </span>
+                <span className="px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700">
+                  Scope: {Object.keys(compactAiBundle.payload.responses).length} Answered Checklist Qs · {evalRes?.activeModules.length ?? compactAiBundle.payload.activeModules.length} Sections
+                </span>
+                {sar.aiSummary.generatedAt && (
+                  <span className="font-mono text-[11px] text-zinc-400">
+                    Generated {sar.aiSummary.generatedAt.slice(0, 10)}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Top Executive Narrative Cards */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
               <div className="lg:col-span-6 p-4 sm:p-5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-800/40 space-y-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-                    1. Executive Summary — {sar.basics.projectName || sar.displayId}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-zinc-600 dark:text-zinc-300">
+                    1. What This SAR Review Is About — {sar.aiSummary.projectName || sar.basics.projectName || sar.displayId}
                   </span>
                   <span
                     className={`px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold ${
@@ -595,9 +617,12 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
               </div>
 
               <div className="lg:col-span-6 p-4 sm:p-5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-800/40 space-y-2.5">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-                    2. Architecture, Access Model &amp; Integration Scope
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-zinc-600 dark:text-zinc-300">
+                    2. Review Scope, Architecture, Access Model &amp; Controls
+                  </span>
+                  <span className="font-mono text-[10px] text-zinc-400">
+                    Tag: {sar.aiSummary.projectName || sar.basics.projectName || sar.displayId}
                   </span>
                 </div>
                 <p className="text-xs sm:text-sm text-zinc-800 dark:text-zinc-200 leading-relaxed">
@@ -606,7 +631,76 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
               </div>
             </div>
 
+            {/* 3. Checklist Domain Scope & Key Selections (All Filled Checklist Questions) */}
+            {sar.aiSummary.stageHighlights && sar.aiSummary.stageHighlights.length > 0 && (
+              <div className="p-4 sm:p-5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/60 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-zinc-600 dark:text-zinc-300">
+                    3. Checklist Scope &amp; Major Security Control Points ({sar.aiSummary.projectName || sar.basics.projectName || sar.displayId})
+                  </span>
+                  <span className="font-mono text-[10px] text-zinc-400">
+                    Synthesized from all answered Preliminary &amp; Detailed Checklist questions
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {sar.aiSummary.stageHighlights.map((hl, idx) => (
+                    <div
+                      key={`${hl.stageTitle}-${idx}`}
+                      className="p-3.5 rounded-lg border border-zinc-200/80 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-800/30 space-y-1.5"
+                    >
+                      <div className="font-display text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                        {hl.stageTitle}
+                      </div>
+                      {hl.summary && (
+                        <p className="text-[11px] text-zinc-600 dark:text-zinc-400 leading-relaxed">
+                          {hl.summary}
+                        </p>
+                      )}
+                      {hl.keySelections && hl.keySelections.length > 0 && (
+                        <ul className="space-y-1 pt-1">
+                          {hl.keySelections.map((sel, sIdx) => (
+                            <li
+                              key={sIdx}
+                              className="text-[11px] text-zinc-800 dark:text-zinc-200 flex items-start gap-1.5 leading-snug"
+                            >
+                              <span className="text-emerald-600 dark:text-emerald-400 font-bold shrink-0">•</span>
+                              <span>{sel}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
+            {/* 4. Priority Focus Areas for ISG Security Reviewer Sign-Off */}
+            {sar.aiSummary.recommendedReviewerFocus && sar.aiSummary.recommendedReviewerFocus.length > 0 && (
+              <div className="p-4 sm:p-5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-800/40 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-zinc-600 dark:text-zinc-300">
+                    4. Priority Verification Focus for ISG Security Reviewer Sign-Off
+                  </span>
+                  <span className="font-mono text-[10px] text-zinc-400">
+                    {sar.aiSummary.recommendedReviewerFocus.length} Reviewer Checkpoints
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {sar.aiSummary.recommendedReviewerFocus.map((focusItem, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-start gap-2.5 p-2.5 rounded-lg bg-white dark:bg-zinc-900/70 border border-zinc-200/70 dark:border-zinc-800 text-xs text-zinc-800 dark:text-zinc-200 leading-snug"
+                    >
+                      <span className="w-5 h-5 rounded-full bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-mono text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                        {idx + 1}
+                      </span>
+                      <span>{focusItem}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-zinc-50/60 dark:bg-zinc-900/50">

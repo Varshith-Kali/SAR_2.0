@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   AlertCircle,
   AlertTriangle,
@@ -56,18 +56,22 @@ export const RequestBasicsView: React.FC<RequestBasicsViewProps> = ({
   const [showGateError, setShowGateError] = useState(false);
   const basics = sar.basics;
   const isReadOnly = sar.status === 'submitted';
-  const flowGates = evaluateFlowGates(sar);
+  const flowGates = useMemo(() => evaluateFlowGates(sar), [sar]);
 
-  const matchingApps = CMDB_APPLICATIONS.filter((app) => {
-    if (!appSearch.trim()) return true;
-    const q = appSearch.toLowerCase();
-    return (
-      app.canonicalName.toLowerCase().includes(q) ||
-      app.code.toLowerCase().includes(q) ||
-      app.aliases.some((al) => al.toLowerCase().includes(q)) ||
-      app.businessUnit.toLowerCase().includes(q)
-    );
-  });
+  const matchingApps = useMemo(
+    () =>
+      CMDB_APPLICATIONS.filter((app) => {
+        if (!appSearch.trim()) return true;
+        const q = appSearch.toLowerCase();
+        return (
+          app.canonicalName.toLowerCase().includes(q) ||
+          app.code.toLowerCase().includes(q) ||
+          app.aliases.some((al) => al.toLowerCase().includes(q)) ||
+          app.businessUnit.toLowerCase().includes(q)
+        );
+      }),
+    [appSearch]
+  );
 
   const ticketTrimmed = (basics.ticketNo || '').trim();
   const isTicketFormatValid =
@@ -512,8 +516,8 @@ export const RequestBasicsView: React.FC<RequestBasicsViewProps> = ({
               onClick={() => {
                 if (!flowGates.basicsComplete && !isReadOnly) {
                   setShowGateError(true);
-                  const timer = setTimeout(() => setShowGateError(false), 3000);
-                  return () => clearTimeout(timer);
+                  window.setTimeout(() => setShowGateError(false), 3000);
+                  return;
                 }
                 setShowGateError(false);
                 onContinueToPreliminary();

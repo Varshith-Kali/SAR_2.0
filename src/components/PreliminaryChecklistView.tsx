@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertCircle,
@@ -83,13 +83,23 @@ export const PreliminaryChecklistView: React.FC<PreliminaryChecklistViewProps> =
   const [stageGateMessage, setStageGateMessage] = useState<string | null>(null);
 
   const evalRes = sar.evaluation;
-  const visibleQIds = new Set(evalRes?.visibleQuestionIds || []);
-  const requiredQIds = new Set(evalRes?.requiredQuestionIds || []);
+  const visibleQIds = useMemo(
+    () => new Set(evalRes?.visibleQuestionIds || []),
+    [evalRes?.visibleQuestionIds]
+  );
+  const requiredQIds = useMemo(
+    () => new Set(evalRes?.requiredQuestionIds || []),
+    [evalRes?.requiredQuestionIds]
+  );
   const isReadOnly = sar.status === 'submitted';
-  const flowGates = evaluateFlowGates(sar, definition);
+  const flowGates = useMemo(() => evaluateFlowGates(sar, definition), [sar, definition]);
 
-  const stageQuestions = definition.questions.filter(
-    (q) => q.stage === activeStage && visibleQIds.has(q.id)
+  const stageQuestions = useMemo(
+    () =>
+      definition.questions.filter(
+        (q) => q.stage === activeStage && visibleQIds.has(q.id)
+      ),
+    [definition.questions, activeStage, visibleQIds]
   );
 
   // Screen-reader & focus management on step change
@@ -368,6 +378,46 @@ export const PreliminaryChecklistView: React.FC<PreliminaryChecklistViewProps> =
                 onClick={() => {
                   if (!flowGates.preliminaryComplete && !isReadOnly) {
                     setStageGateMessage(
+                      `Complete remaining questions (${flowGates.missingPreliminaryCodes.length} remaining) to customize or delegate sections.`
+                    );
+                    setTimeout(() => setStageGateMessage(null), 3500);
+                    return;
+                  }
+                  setStageGateMessage(null);
+                  onChangeStage(5);
+                }}
+                className={`sar-glass-step-btn w-full text-left px-3.5 py-2 rounded-xl flex items-center justify-between gap-2 cursor-pointer border ${
+                  activeStage === 5
+                    ? 'bg-zinc-950 text-white border-zinc-950 dark:bg-zinc-100 dark:text-zinc-900 dark:border-zinc-100 font-semibold shadow-xs'
+                    : flowGates.preliminaryComplete || isReadOnly
+                    ? 'border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100/90 dark:hover:bg-zinc-800/70'
+                    : 'border-transparent text-zinc-400 opacity-75'
+                }`}
+              >
+                <div className="min-w-0">
+                  <div className="text-xs flex items-center gap-1.5 truncate">
+                    {!flowGates.preliminaryComplete && !isReadOnly && (
+                      <Lock className="w-3 h-3 shrink-0" />
+                    )}
+                    <span>5. Customize / Delegate Scope</span>
+                  </div>
+                  <div
+                    className={`text-[11px] truncate ${
+                      activeStage === 5
+                        ? 'text-zinc-300 dark:text-zinc-600'
+                        : 'text-zinc-400 dark:text-zinc-500'
+                    }`}
+                  >
+                    Add/remove sections or assign teammates
+                  </div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (!flowGates.preliminaryComplete && !isReadOnly) {
+                    setStageGateMessage(
                       `Complete remaining questions (${flowGates.missingPreliminaryCodes.length} remaining) to open Checklist.`
                     );
                     setTimeout(() => setStageGateMessage(null), 3500);
@@ -454,6 +504,7 @@ export const PreliminaryChecklistView: React.FC<PreliminaryChecklistViewProps> =
                       <div
                         key={q.id}
                         id={`question-${q.id}`}
+                        data-question-code={q.code}
                         className="sar-glass-card p-5 sm:p-6 rounded-2xl border border-zinc-200/90 dark:border-zinc-800 relative"
                       >
                         {/* Top Question Meta */}
@@ -688,9 +739,10 @@ export const PreliminaryChecklistView: React.FC<PreliminaryChecklistViewProps> =
                             `Please complete the ${currentStageGate.missingCodes.length} remaining required question(s) in Stage ${activeStage} first.`
                           );
                           setTimeout(() => setStageGateMessage(null), 3500);
-                          const firstMissingEl = document.getElementById(
-                            `question-${currentStageGate.missingCodes[0]}`
-                          );
+                          const missingCode = currentStageGate.missingCodes[0];
+                          const firstMissingEl =
+                            document.getElementById(`question-${missingCode}`) ||
+                            document.querySelector(`[data-question-code="${missingCode}"]`);
                           firstMissingEl?.scrollIntoView({ behavior: 'smooth', block: 'center' });
                           return;
                         }
@@ -854,6 +906,26 @@ export const PreliminaryChecklistView: React.FC<PreliminaryChecklistViewProps> =
                         ))}
                       </div>
                     </div>
+                  </div>
+
+                  {/* Stage 5 Navigation Footer */}
+                  <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => onChangeStage(4)}
+                      className="sar-glass-step-btn inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full border border-zinc-300 dark:border-zinc-700 bg-white/80 dark:bg-zinc-900/80 text-xs font-semibold text-zinc-700 dark:text-zinc-200 hover:border-zinc-950 dark:hover:border-zinc-300 cursor-pointer"
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                      <span>Back to Stage 4: WHAT</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onOpenDetailedModule('M1')}
+                      className="sar-glass-step-btn inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-full bg-zinc-950 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white dark:text-zinc-900 text-white text-xs font-semibold cursor-pointer shadow-xs"
+                    >
+                      <span>Open Security Checklist ({evalRes?.activeModules.length || 2} Sections)</span>
+                      <ArrowRight className="w-4 h-4 shrink-0" />
+                    </button>
                   </div>
                 </div>
               )}

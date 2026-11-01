@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertTriangle,
@@ -74,16 +74,16 @@ export interface ToastItem {
   onAction?: () => void;
 }
 
+const IST_TIME_FORMATTER = new Intl.DateTimeFormat('en-IN', {
+  timeZone: 'Asia/Kolkata',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+});
+
 function getFormattedISTTime(): string {
-  return (
-    new Intl.DateTimeFormat('en-IN', {
-      timeZone: 'Asia/Kolkata',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    }).format(new Date()) + ' IST'
-  );
+  return IST_TIME_FORMATTER.format(new Date()) + ' IST';
 }
 
 export default function App() {
@@ -223,6 +223,10 @@ export default function App() {
     };
   }, []);
 
+  const activeSarRef = useRef<SARRecord>(activeSar);
+  activeSarRef.current = activeSar;
+  const saveTimerRef = useRef<number | null>(null);
+
   const getPinnedDefinition = useCallback(
     (sar: SARRecord): DefinitionVersion => {
       return (
@@ -232,15 +236,54 @@ export default function App() {
     [definitions, activeDefinition]
   );
 
-  const activeFlowGates = evaluateFlowGates(activeSar, getPinnedDefinition(activeSar));
+  const pinnedDefinition = useMemo(
+    () => getPinnedDefinition(activeSar),
+    [getPinnedDefinition, activeSar.pinnedVersionId]
+  );
 
-  // Persist current requester's progress in browser storage safely and immediately
+  const activeFlowGates = useMemo(
+    () => evaluateFlowGates(activeSar, pinnedDefinition),
+    [activeSar, pinnedDefinition]
+  );
+
+  // Flush any pending debounced sessionStorage write on page hide/unload
+  useEffect(() => {
+    const flushPendingSave = () => {
+      if (saveTimerRef.current !== null) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+        saveBrowserSessionForRequester(currentPersona, activeSarRef.current);
+      }
+    };
+    window.addEventListener('pagehide', flushPendingSave);
+    window.addEventListener('beforeunload', flushPendingSave);
+    return () => {
+      flushPendingSave();
+      window.removeEventListener('pagehide', flushPendingSave);
+      window.removeEventListener('beforeunload', flushPendingSave);
+    };
+  }, [currentPersona]);
+
+  // Persist current requester's progress in browser storage safely (debounced option for rapid typing)
   const persistSessionSar = useCallback(
-    (nextSar: SARRecord, personaOverride?: UserPersona) => {
+    (nextSar: SARRecord, personaOverride?: UserPersona, debounceStorage = false) => {
       const targetPersona = personaOverride || currentPersona;
+      activeSarRef.current = nextSar;
       setActiveSar(nextSar);
-      saveBrowserSessionForRequester(targetPersona, nextSar);
-      setLastSavedTime(getFormattedISTTime());
+      if (saveTimerRef.current !== null) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+      if (debounceStorage) {
+        saveTimerRef.current = window.setTimeout(() => {
+          saveTimerRef.current = null;
+          saveBrowserSessionForRequester(targetPersona, activeSarRef.current);
+          setLastSavedTime(getFormattedISTTime());
+        }, 160);
+      } else {
+        saveBrowserSessionForRequester(targetPersona, nextSar);
+        setLastSavedTime(getFormattedISTTime());
+      }
     },
     [currentPersona]
   );
@@ -250,6 +293,7 @@ export default function App() {
     const nextVariant = sampleVariantCounter + 1;
     setSampleVariantCounter(nextVariant);
     const populated = fillRandomSampleSessionForRequester(currentPersona, nextVariant);
+    activeSarRef.current = populated;
     setActiveSar(populated);
     setActivePrelimStage(4);
     setActiveModuleCode('M1');
@@ -267,6 +311,7 @@ export default function App() {
   // Reset / Clear Current Temporary Browser Session
   const handleResetCurrentSession = () => {
     const fresh = clearBrowserSessionForRequester(currentPersona);
+    activeSarRef.current = fresh;
     setActiveSar(fresh);
     setActivePrelimStage(1);
     setActiveModuleCode('M1');
@@ -324,7 +369,14 @@ export default function App() {
 
     if (targetScreen === 'modules') {
       if (gates.canAccessModules) {
-        setActiveModuleCode(sar.lastActiveModule || 'M1');
+        const activeModCodes = new Set(
+          (sar.evaluation?.activeModules || []).map((m) => m.code)
+        );
+        const preferredMod =
+          sar.lastActiveModule && activeModCodes.has(sar.lastActiveModule)
+            ? sar.lastActiveModule
+            : (sar.evaluation?.activeModules || []).find((m) => m.code !== 'M0')?.code || 'M1';
+        setActiveModuleCode(preferredMod);
         setActiveView('modules');
       } else if (gates.canAccessPreliminary) {
         pushToast(
@@ -347,7 +399,10 @@ export default function App() {
 
     if (targetScreen === 'preliminary') {
       if (gates.canAccessPreliminary) {
-        const requestedStage = Math.min(sar.lastActiveStage || 1, gates.maxUnlockedStage);
+        const requestedStage =
+          sar.lastActiveStage === 5 && gates.preliminaryComplete
+            ? 5
+            : Math.min(sar.lastActiveStage || 1, gates.maxUnlockedStage);
         setActivePrelimStage(requestedStage);
         setActiveView('preliminary');
       } else {
@@ -365,15 +420,16 @@ export default function App() {
   };
 
   const handleUpdateBasics = (patch: Partial<RequestBasicsData>) => {
-    const nextBasics = { ...activeSar.basics, ...patch };
+    const currentSar = activeSarRef.current;
+    const nextBasics = { ...currentSar.basics, ...patch };
     const nextSar: SARRecord = {
-      ...activeSar,
+      ...currentSar,
       basics: nextBasics,
       updatedBy: currentPersona.name,
       updatedAt: new Date().toISOString(),
       lastActiveScreen: 'basics',
     };
-    persistSessionSar(nextSar);
+    persistSessionSar(nextSar, undefined, true);
   };
 
   const handleAnswerQuestion = (
@@ -381,10 +437,11 @@ export default function App() {
     value: unknown,
     extra?: { comment?: string; naReason?: string; unknownOwner?: string; unknownNote?: string }
   ) => {
-    const def = getPinnedDefinition(activeSar);
-    const prevModules = new Set(activeSar.evaluation?.activeModules.map((m) => m.code) || []);
-    const previousAnswerVal = activeSar.answers[questionId]?.value;
-    const existing = activeSar.answers[questionId];
+    const currentSar = activeSarRef.current;
+    const def = getPinnedDefinition(currentSar);
+    const prevModules = new Set(currentSar.evaluation?.activeModules.map((m) => m.code) || []);
+    const previousAnswerVal = currentSar.answers[questionId]?.value;
+    const existing = currentSar.answers[questionId];
 
     const sanitizedValue =
       typeof value === 'string' ? redactSensitivePatterns(value).slice(0, 2000) : value;
@@ -402,7 +459,8 @@ export default function App() {
       ? redactSensitivePatterns(extra.unknownNote).slice(0, 600)
       : undefined;
 
-    const now = new Date().toISOString();
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
     const historyItem = {
       value: sanitizedValue,
       comment: sanitizedComment,
@@ -413,8 +471,20 @@ export default function App() {
       updatedAt: now,
     };
 
-    const nextAnswers: Record<string, AnswerEntry> = {
-      ...activeSar.answers,
+    // Coalesce rapid keystrokes within 1.5s on the same question so typing doesn't bloat history
+    const prevHistory = existing?.history || [];
+    const lastHistoryItem = prevHistory[prevHistory.length - 1];
+    const isRapidTyping =
+      lastHistoryItem &&
+      nowMs - new Date(lastHistoryItem.updatedAt).getTime() < 1500;
+    const nextHistory = existing
+      ? isRapidTyping
+        ? [...prevHistory.slice(0, -1), historyItem]
+        : [...prevHistory.slice(-19), historyItem]
+      : [historyItem];
+
+    const draftAnswers: Record<string, AnswerEntry> = {
+      ...currentSar.answers,
       [questionId]: {
         questionId,
         value: sanitizedValue,
@@ -425,40 +495,46 @@ export default function App() {
         unknownNote: sanitizedUnknownNote,
         updatedBy: currentPersona.name,
         updatedAt: now,
-        history: existing ? [...existing.history.slice(-19), historyItem] : [historyItem],
+        history: nextHistory,
       },
     };
 
-    // Evaluate once to determine active modules and visible questions, then mark inactive answers
-    const firstEval = evaluateSAR(
-      nextAnswers,
-      activeSar.tables,
-      activeSar.manualCategories,
+    // Single-pass topological evaluation determines all active modules and visible questions
+    const nextEvaluation = evaluateSAR(
+      draftAnswers,
+      currentSar.tables,
+      currentSar.manualCategories,
       def
     );
-    const activeModSet = new Set(firstEval.activeModules.map((m) => m.code));
-    const visibleQSet = new Set(firstEval.visibleQuestionIds);
+    const activeModSet = new Set(nextEvaluation.activeModules.map((m) => m.code));
+    const visibleQSet = new Set(nextEvaluation.visibleQuestionIds);
+    const qDefMap = new Map(def.questions.map((q) => [q.id, q]));
 
-    for (const [qId, ans] of Object.entries(nextAnswers)) {
-      const qDef = def.questions.find((q) => q.id === qId);
-      if (!qDef) continue;
+    const nextAnswers: Record<string, AnswerEntry> = {};
+    for (const [qId, ans] of Object.entries(draftAnswers)) {
+      const qDef = qDefMap.get(qId);
+      if (!qDef) {
+        nextAnswers[qId] = ans;
+        continue;
+      }
       const shouldBeActive =
         qDef.stage !== undefined
           ? visibleQSet.has(qId)
           : activeModSet.has(qDef.moduleId) && visibleQSet.has(qId);
-      ans.state = shouldBeActive ? 'active' : 'inactive';
+      const targetState = shouldBeActive ? 'active' : 'inactive';
+      nextAnswers[qId] = ans.state === targetState ? ans : { ...ans, state: targetState };
     }
 
-    const nextEvaluation = evaluateSAR(
-      nextAnswers,
-      activeSar.tables,
-      activeSar.manualCategories,
-      def
-    );
-    const nextModules = new Set(nextEvaluation.activeModules.map((m) => m.code));
+    const addedMods = Array.from(activeModSet).filter((c) => !prevModules.has(c));
+    const removedMods = Array.from(prevModules).filter((c) => !activeModSet.has(c));
 
-    const addedMods = Array.from(nextModules).filter((c) => !prevModules.has(c));
-    const removedMods = Array.from(prevModules).filter((c) => !nextModules.has(c));
+    // Keep activeModuleCode valid if dynamic scope changes removed the selected module
+    let nextActiveModuleCode = activeModuleCode;
+    if (!activeModSet.has(activeModuleCode)) {
+      const firstActiveChecklist = nextEvaluation.activeModules.find((m) => m.code !== 'M0');
+      nextActiveModuleCode = firstActiveChecklist?.code || 'M1';
+      setActiveModuleCode(nextActiveModuleCode);
+    }
 
     if (addedMods.length > 0 || removedMods.length > 0) {
       setScopeChangeNotice({
@@ -484,16 +560,20 @@ export default function App() {
     }
 
     const nextSar: SARRecord = {
-      ...activeSar,
+      ...currentSar,
       answers: nextAnswers,
       evaluation: nextEvaluation,
       updatedBy: currentPersona.name,
       updatedAt: now,
       lastActiveScreen: activeView,
       lastActiveStage: activePrelimStage,
-      lastActiveModule: activeModuleCode,
+      lastActiveModule: nextActiveModuleCode,
     };
-    persistSessionSar(nextSar);
+
+    const shouldDebounceStorage =
+      extra?.comment !== undefined ||
+      (typeof value === 'string' && qDefMap.get(questionId)?.answerType === 'long_text');
+    persistSessionSar(nextSar, undefined, shouldDebounceStorage);
   };
 
   const handleUndoScopeChange = () => {
@@ -510,14 +590,43 @@ export default function App() {
     fullReviewRequested: boolean;
     reason?: string;
   }) => {
-    const def = getPinnedDefinition(activeSar);
-    const nextEval = evaluateSAR(activeSar.answers, activeSar.tables, manual, def);
+    const currentSar = activeSarRef.current;
+    const def = getPinnedDefinition(currentSar);
+    const nextEval = evaluateSAR(currentSar.answers, currentSar.tables, manual, def);
+    const activeModSet = new Set(nextEval.activeModules.map((m) => m.code));
+    const visibleQSet = new Set(nextEval.visibleQuestionIds);
+    const qDefMap = new Map(def.questions.map((q) => [q.id, q]));
+
+    const nextAnswers: Record<string, AnswerEntry> = {};
+    for (const [qId, ans] of Object.entries(currentSar.answers)) {
+      const qDef = qDefMap.get(qId);
+      if (!qDef) {
+        nextAnswers[qId] = ans;
+        continue;
+      }
+      const shouldBeActive =
+        qDef.stage !== undefined
+          ? visibleQSet.has(qId)
+          : activeModSet.has(qDef.moduleId) && visibleQSet.has(qId);
+      const targetState = shouldBeActive ? 'active' : 'inactive';
+      nextAnswers[qId] = ans.state === targetState ? ans : { ...ans, state: targetState };
+    }
+
+    let nextActiveModuleCode = activeModuleCode;
+    if (!activeModSet.has(activeModuleCode)) {
+      const firstActiveChecklist = nextEval.activeModules.find((m) => m.code !== 'M0');
+      nextActiveModuleCode = firstActiveChecklist?.code || 'M1';
+      setActiveModuleCode(nextActiveModuleCode);
+    }
+
     const nextSar: SARRecord = {
-      ...activeSar,
+      ...currentSar,
+      answers: nextAnswers,
       manualCategories: manual,
       evaluation: nextEval,
       updatedBy: currentPersona.name,
       updatedAt: new Date().toISOString(),
+      lastActiveModule: nextActiveModuleCode,
     };
     persistSessionSar(nextSar);
     pushToast(
@@ -530,10 +639,11 @@ export default function App() {
   };
 
   const handleUpdateTables = (tables: RepeaterTablesData) => {
-    const def = getPinnedDefinition(activeSar);
-    const nextEval = evaluateSAR(activeSar.answers, tables, activeSar.manualCategories, def);
+    const currentSar = activeSarRef.current;
+    const def = getPinnedDefinition(currentSar);
+    const nextEval = evaluateSAR(currentSar.answers, tables, currentSar.manualCategories, def);
     const nextSar: SARRecord = {
-      ...activeSar,
+      ...currentSar,
       tables,
       evaluation: nextEval,
       updatedBy: currentPersona.name,
@@ -543,8 +653,9 @@ export default function App() {
   };
 
   const handleUpdateAttachments = (attachments: AttachmentSlotState[]) => {
+    const currentSar = activeSarRef.current;
     const nextSar: SARRecord = {
-      ...activeSar,
+      ...currentSar,
       attachments,
       updatedBy: currentPersona.name,
       updatedAt: new Date().toISOString(),
