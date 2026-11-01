@@ -606,22 +606,7 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
               </div>
             </div>
 
-            {/* Recommended Security Reviewer Focus */}
-            {sar.aiSummary.recommendedReviewerFocus.length > 0 && (
-              <div className="p-4 sm:p-5 rounded-xl border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50/50 dark:bg-emerald-950/20 space-y-2.5">
-                <div className="font-mono text-[11px] font-bold uppercase tracking-wider text-emerald-900 dark:text-emerald-300">
-                  3. Priority Focus Areas for ISG Security Reviewer Sign-Off
-                </div>
-                <ul className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-xs sm:text-[13px] text-zinc-800 dark:text-zinc-200">
-                  {sar.aiSummary.recommendedReviewerFocus.map((item, idx) => (
-                    <li key={idx} className="flex items-start gap-2 leading-relaxed">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
-                      <span>{item}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+
           </div>
         ) : (
           <div className="p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-zinc-50/60 dark:bg-zinc-900/50">
