@@ -199,7 +199,7 @@ async function startServer() {
   // OWASP API8:2023 — Suppress framework fingerprinting
   app.disable('x-powered-by');
 
-  // Enterprise HTTP Security Headers & WAF Gate Middleware (compatible with AI Studio iframe preview)
+  // Enterprise HTTP Security Headers & WAF Gate Middleware
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-DNS-Prefetch-Control', 'off');
