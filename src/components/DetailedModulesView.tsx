@@ -479,7 +479,7 @@ export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
           <div id="sec-mod-controls" className="p-5 sm:p-6 rounded-2xl border border-zinc-200/90 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono text-zinc-600 dark:text-zinc-400 mb-2">
               <span className="px-2.5 py-0.5 rounded-full bg-zinc-950 text-white dark:bg-zinc-100 dark:text-zinc-900 text-[11px] font-semibold">
-                Section {modIndex + 1} of {checklistModules.length} · Est. {currentModInfo?.estimatedMinutes} minutes
+                Section {modIndex + 1} of {checklistModules.length}
               </span>
               {!flowGates.modulesComplete && !isReadOnly && (
                 <button

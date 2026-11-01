@@ -213,7 +213,7 @@ export const PreliminaryChecklistView: React.FC<PreliminaryChecklistViewProps> =
           <div className="flex items-center justify-between px-1 mb-2 text-[11px] font-mono text-zinc-500 dark:text-zinc-400">
             <span className="font-bold uppercase tracking-wider">Preliminary Stages (WHO · HOW · WHERE · WHAT)</span>
             <span>
-              {evalRes?.activeModules.length || 2} Sections · ~{evalRes?.estimatedMinutes || 4}m
+              {evalRes?.activeModules.length || 2} Sections
             </span>
           </div>
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
@@ -755,8 +755,7 @@ export const PreliminaryChecklistView: React.FC<PreliminaryChecklistViewProps> =
                   <div className="sar-glass-card p-6 rounded-xl border border-zinc-200 dark:border-zinc-800">
                     <div className="flex items-center justify-between mb-4">
                       <h2 className="font-display text-lg font-bold text-zinc-900 dark:text-white">
-                        Your Checklist Roadmap ({evalRes?.activeModules.length || 0} Sections · Est.{' '}
-                        {evalRes?.estimatedMinutes || 0} mins)
+                        Your Checklist Roadmap ({evalRes?.activeModules.length || 0} Sections)
                       </h2>
                       <button
                         type="button"
@@ -786,9 +785,6 @@ export const PreliminaryChecklistView: React.FC<PreliminaryChecklistViewProps> =
                               <div className="flex flex-wrap items-center gap-2 text-xs">
                                 <span className="font-display font-semibold text-sm text-zinc-900 dark:text-white">
                                   {mod.title}
-                                </span>
-                                <span className="font-mono text-zinc-400 tabular-nums">
-                                  · ~{mod.estimatedMinutes} min
                                 </span>
                                 {mod.code !== 'M0' && mod.code !== 'M17' && (
                                   <span className="font-mono text-zinc-500 tabular-nums">
@@ -877,9 +873,6 @@ export const PreliminaryChecklistView: React.FC<PreliminaryChecklistViewProps> =
               </div>
               <div className="text-[11px] text-zinc-500">Tailored to your answers</div>
             </div>
-            <div className="font-mono text-xs font-bold text-zinc-900 dark:text-zinc-100 tabular-nums">
-              ~{evalRes?.estimatedMinutes || 4} min
-            </div>
           </div>
 
           {/* Detected Categories */}
@@ -931,7 +924,7 @@ export const PreliminaryChecklistView: React.FC<PreliminaryChecklistViewProps> =
                     <span className="font-mono text-[11px] text-zinc-400 tabular-nums shrink-0">
                       {mod.code !== 'M0' && mod.code !== 'M17'
                         ? `${mod.visibleQuestionCount ?? 0} Qs`
-                        : `${mod.estimatedMinutes}m`}
+                        : ''}
                     </span>
                   </div>
                 </button>
