@@ -1,4 +1,4 @@
-﻿import { DEFAULT_DEFINITION_VERSION, USER_PERSONAS } from './definitions';
+import { DEFAULT_DEFINITION_VERSION, USER_PERSONAS } from './definitions';
 import { evaluateSAR, redactSensitivePatterns } from './rulesEngine';
 import {
   AnswerEntry,
@@ -119,7 +119,7 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
     projectName: 'OmniPay Real-Time UPI & Merchant Settlement Gateway v2.4',
     businessUnit: 'Retail & Digital Banking',
     targetGoLiveDate: '2026-12-18',
-    connectedAppIds: ['app-cmdb-101', 'app-cmdb-102', 'app-cmdb-106', 'app-cmdb-108'],
+    connectedAppIds: ['app-cmdb-101', 'app-cmdb-102', 'app-cmdb-103', 'app-cmdb-104'],
     customConnectedApps: ['NPCI UPI Switch v3.0', 'Merchant Recon Kafka Cluster'],
     preliminaryDataTypes: [
       'Personal data (PII)',
@@ -258,7 +258,7 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
     projectName: 'CardVault PCI-DSS v4.0 Tokenization & Partner SFTP Recon Engine',
     businessUnit: 'Cards & Merchant Acquiring',
     targetGoLiveDate: '2026-11-30',
-    connectedAppIds: ['app-cmdb-104', 'app-cmdb-101', 'app-cmdb-106'],
+    connectedAppIds: ['app-cmdb-102', 'app-cmdb-101', 'app-cmdb-103'],
     customConnectedApps: ['Thales Luna HSM Cluster', 'Visa/Mastercard Clearing Gateway'],
     preliminaryDataTypes: [
       'Card data (PCI)',
@@ -360,7 +360,7 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
     projectName: 'TrustBridge Enterprise IAM & CIAM Consolidation Platform v1.0',
     businessUnit: 'Information Security & Digital Identity',
     targetGoLiveDate: '2027-02-28',
-    connectedAppIds: ['app-cmdb-101', 'app-cmdb-103', 'app-cmdb-107'],
+    connectedAppIds: ['app-cmdb-101', 'app-cmdb-102', 'app-cmdb-104'],
     customConnectedApps: ['SailPoint IdentityNow (IGA)', 'Okta CIAM Tenant', 'CyberArk PAM v13'],
     preliminaryDataTypes: [
       'Personal data (PII)',
