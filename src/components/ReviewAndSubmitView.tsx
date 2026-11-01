@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Check,
@@ -543,12 +543,38 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
         {/* Body Content: Either Generated AI Summary or Ready-to-Generate State */}
         {sar.aiSummary ? (
           <div className="p-5 sm:p-6 space-y-4">
+            {/* Project / Request Name Header */}
+            {sar.basics.projectName && (
+              <div className="flex flex-wrap items-center gap-3 pb-3 border-b border-zinc-100 dark:border-zinc-800">
+                <div>
+                  <div className="text-[11px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-0.5">
+                    Project / Request
+                  </div>
+                  <div className="text-base font-bold text-zinc-900 dark:text-white leading-snug">
+                    {sar.basics.projectName}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 ml-auto shrink-0">
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700">
+                    {sar.displayId} · Rev {sar.revisionNo}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 border border-zinc-200 dark:border-zinc-700">
+                    {sar.basics.businessUnit || 'Business Unit N/A'}
+                  </span>
+                  {sar.aiSummary.generatedAt && (
+                    <span className="font-mono text-[11px] text-zinc-400">
+                      Summary generated {sar.aiSummary.generatedAt.slice(0, 10)}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
             {/* Top Executive Cards */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
               <div className="lg:col-span-6 p-4 sm:p-5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-800/40 space-y-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-                    1. Executive Summary of Application / Change
+                    1. Executive Summary — {sar.basics.projectName || sar.displayId}
                   </span>
                   <span
                     className={`px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold ${
@@ -569,12 +595,9 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
               </div>
 
               <div className="lg:col-span-6 p-4 sm:p-5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-800/40 space-y-2.5">
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
                   <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-                    2. Architectural Scope, Hosting &amp; Trust Boundaries
-                  </span>
-                  <span className="font-mono text-[11px] text-zinc-400">
-                    Generated {sar.aiSummary.generatedAt.slice(0, 19).replace('T', ' ')} UTC
+                    2. Architecture, Access Model &amp; Integration Scope
                   </span>
                 </div>
                 <p className="text-xs sm:text-sm text-zinc-800 dark:text-zinc-200 leading-relaxed">

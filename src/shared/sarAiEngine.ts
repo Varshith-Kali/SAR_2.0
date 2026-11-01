@@ -1047,20 +1047,27 @@ export async function* streamGenerateSarAiSummary(
     ? `\n[LEARNED_PATTERN_CONTEXT — use only to inform the quality and depth of your analysis; do NOT echo archetype IDs, genome hashes, SAR IDs, or system tags in any output field]\n${learnedPatternContext}\n`
     : '';
 
+  const projectLabel = payload.basics.projectName
+    ? `"${payload.basics.projectName}" (${payload.displayId})`
+    : payload.displayId;
+
   const prompt =
     `${compactContext}${learnedBlock}\n\n` +
-    `TASK: Based on ALL the requester responses above, write a crisp, clear Security Architecture Review (SAR) Summary for a business and security leadership audience. Every sentence must be plain English — no internal question codes (P1, P13, M2.2 etc.), no archetype IDs, no system identifiers.\n\n` +
+    `TASK: Based on ALL the requester responses above, write a thorough, well-structured Security Architecture Review (SAR) Summary for ${projectLabel}. ` +
+    `The audience is business and security leadership — write every sentence in plain English, referencing the actual system, domain, and control names recorded. ` +
+    `No internal question codes, no archetype IDs, no system identifiers of any kind.\n\n` +
     `Return ONLY a valid JSON object (no prose, no markdown fences) matching this exact schema:\n` +
     `{\n` +
     `  "overallRiskPosture": "Low" | "Moderate" | "Elevated" | "High" | "Critical",\n` +
-    `  "executiveSummary": "4-6 sentences covering: (1) what this application does and why this review is being raised, (2) business unit, criticality and go-live timeline, (3) the data types and regulatory scope in play (PII, PCI, financial data etc.), and (4) the overall control posture and readiness based on the recorded responses. Plain English only — no question codes or system IDs.",\n` +
-    `  "changeScopeAndArchitecture": "4-6 sentences covering: (1) hosting model and environments, (2) who accesses the system and how (user types, channels, authentication mechanisms and privileged access controls), (3) what systems it connects to and how (integration protocols, APIs, file transfers, key counterparties), and (4) network segmentation, firewall posture, third-party/vendor governance, SIEM/logging, and DR/resilience controls in place. Plain English only — no question codes or system IDs.",\n` +
+    `  "executiveSummary": "6-8 sentences covering: (1) the full name of the project or request and what it does — state the project name explicitly, (2) why this Security Architecture Review is being raised and what change or initiative is driving it, (3) the business unit, application criticality tier, and target go-live date, (4) the data types and regulatory or compliance scope in play (e.g. PII, PCI-DSS card data, financial records, RBI guidelines, DPDP), (5) who the end users and non-human actors are (employee, customer, partner, service accounts etc.), and (6) a concise overall assessment of the control posture and security readiness based on the recorded responses. Plain English only — reference actual names like the system name, business unit, data types, and compliance frameworks; no question codes or system IDs.",\n` +
+    `  "changeScopeAndArchitecture": "6-8 sentences covering: (1) the hosting model and deployment environments (cloud, on-premises, hybrid — name the actual platforms or data centres), (2) the full access model — all user types and the channels and authentication mechanisms they use, including privileged access controls such as PAM, MFA type, session recording, and approval workflows, (3) all system integrations and counterparties — name the actual systems, protocols (REST API, Kafka, SFTP, database connections), and data flows, (4) how the API and integration layer is secured (gateway, mTLS, OAuth, rate limiting, payload encryption), (5) network architecture — zones, segmentation, firewall posture, WAF, DMZ, microsegmentation, and whether internet exposure exists, and (6) third-party and vendor governance controls, SIEM and audit logging coverage, and disaster recovery or business continuity posture. Plain English only — name actual technologies and systems; no question codes or system IDs.",\n` +
     `  "recommendedReviewerFocus": [\n` +
-    `    "Specific priority area 1 the security reviewer should focus on, based on what was recorded — written as a clear action or verification point for a human reviewer",\n` +
+    `    "Specific priority area 1 — written as a concrete verification point or action a human security reviewer must confirm, referencing the actual control domain and system context",\n` +
     `    "Specific priority area 2",\n` +
     `    "Specific priority area 3",\n` +
     `    "Specific priority area 4",\n` +
-    `    "Specific priority area 5"\n` +
+    `    "Specific priority area 5",\n` +
+    `    "Specific priority area 6"\n` +
     `  ]\n` +
     `}`;
 
@@ -1154,7 +1161,7 @@ export async function* streamGenerateSarAiSummary(
   const recommendedReviewerFocus: string[] = Array.isArray(parsed.recommendedReviewerFocus)
     ? (parsed.recommendedReviewerFocus as unknown[])
         .filter((f): f is string => typeof f === 'string')
-        .map((f) => clamp(sanitizeText(stripInternalCodes(f)), 380))
+        .map((f) => clamp(sanitizeText(stripInternalCodes(f)), 520))
         .filter(Boolean)
         .slice(0, 8)
     : [];
@@ -1162,8 +1169,8 @@ export async function* streamGenerateSarAiSummary(
   const result: SarAiSummaryResult = {
     generatedAt: new Date().toISOString(),
     model: REQUIRED_MODEL,
-    executiveSummary: clamp(sanitizeText(stripInternalCodes(parsed.executiveSummary)), 2400),
-    changeScopeAndArchitecture: clamp(sanitizeText(stripInternalCodes(parsed.changeScopeAndArchitecture)), 2400),
+    executiveSummary: clamp(sanitizeText(stripInternalCodes(parsed.executiveSummary)), 3600),
+    changeScopeAndArchitecture: clamp(sanitizeText(stripInternalCodes(parsed.changeScopeAndArchitecture)), 3600),
     overallRiskPosture: RISK_POSTURES.includes(
       parsed.overallRiskPosture as SarAiSummaryResult['overallRiskPosture']
     )
