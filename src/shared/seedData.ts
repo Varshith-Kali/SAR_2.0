@@ -3,7 +3,6 @@ import { evaluateSAR, redactSensitivePatterns } from './rulesEngine';
 import {
   AnswerEntry,
   AttachmentSlotState,
-  AuditEvent,
   RepeaterTablesData,
   SARRecord,
   UserPersona,
@@ -426,9 +425,9 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
       M4_Q3: 'tls13_jws_payload',
       M4_Q4: 'consent_and_automated_purge',
       M4_Q5: 'dlp_watermarked_exports',
-      M4_Q8: 'india_dc_dr_only_zero_cross_border',
+      M4_Q8: 'cloud_rds_audit_guardduty',
       M4_Q10: 'argon2_sha256_vault_90d',
-      M4_Q11: 'strict_log_redaction_regex',
+      M4_Q11: 'no_file_upload_encrypted_backups',
       M4_Q12: 'vault_kms_auto_rotation_90d',
       M4_Q13: 'zero_manual_automated_encrypted_backups',
       M5_Q1: 'mtls_oauth2',
@@ -436,7 +435,7 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
       M5_Q3: 'jdbc_tls_readonly_view',
       M5_Q7: 'jwe_mle_kms_versioned',
       M5_Q8: 'realtime_api_gw_vault_secrets',
-      M7_Q2: 'hmac_replay_mtls_webhook',
+      M7_Q2: 'hmac_sha256_timestamp',
       M8_Q1: 'soc2_iso27001_dedicated',
       M8_Q2: 'bank_repo_sast_build',
       M8_Q3: 'cyberark_pam_recorded',
@@ -448,37 +447,20 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
       M10_Q2: 'signed_non_root_k8s',
       M10_Q3: 'edr_illumio_qualys_active',
       M11_Q1: 'bank_landing_zone',
-      M11_Q2: 'cspm_kms_hsm_private_link',
-      M11_Q3: [
-        'vpc_flow_logs',
-        'cloudtrail',
-        'guard_duty',
-        's3_access_logs',
-        'waf_logs',
-        'rds_audit_logs',
-        'eks_control_plane_logs',
-        'kms_key_usage_logs',
-      ],
+      M11_Q2: 's3_block_public_cmk_irsa',
+      M11_Q3: ['none_non_aws_cloud'],
       M11_Q4: 'vpc_3tier_sg_privatelink_egress_fw',
       M11_Q5: 'kms_cmk_tls12_secrets_manager',
       M11_Q6: 'siem_guardduty_object_lock_multiaz_backup',
-      M11_Q8: 'separate_accounts_zero_peering',
-      M11_Q12: 'private_subnet_no_public_ip_nat',
-      M11_Q14: 'private_endpoints_vpce_no_igw',
-      M11_Q20: 'block_public_access_enforced',
-      M11_Q21: 'sse_kms_cmk_bucket_key',
-      M11_Q25: 'secrets_manager_kms_auto_rotate',
-      M11_Q26: 'zero_access_keys_iam_roles_only',
-      M11_Q28: 'cloudtrail_org_siem_realtime_object_lock',
       M12_Q1: 'waf_dmz_proxy',
       M12_Q2: 'akamai_waf_ddos_bot',
       M12_Q4: 'standard_ports_only_scoped',
-      M14_Q1: 'cert_pinning_play_integrity',
+      M14_Q1: 'full_mobile_rasp',
       M15_Q1: 'private_llm_guardrails',
       M15_Q2: 'read_only_rag',
       M16_Q1: 'yes_siem_integrated',
       M16_Q2:
-        'Active-Standby DR between Azure Central India and Azure South India with RPO ≤ 30 mins and RTO ≤ 2 hours. Automated bi-annual DR failover drills and immutable geo-redundant backup of all identity stores.',
+        'Active-Standby DR between Azure Central India and Azure South India with RPO <= 30 mins and RTO <= 2 hours. Automated bi-annual DR failover drills and immutable geo-redundant backup of all identity stores.',
       M16_Q3: 'active_active_ha_sync_pam_logs',
     },
   },
@@ -490,8 +472,8 @@ export function createPopulatedSampleSARSession(
   variantIndex = 0
 ): SARRecord {
   const now = new Date().toISOString();
-  const variant =
-    SAMPLE_SCENARIO_VARIANTS[Math.abs(variantIndex) % SAMPLE_SCENARIO_VARIANTS.length];
+  const normalizedIdx = Math.abs(variantIndex) % SAMPLE_SCENARIO_VARIANTS.length;
+  const variant = SAMPLE_SCENARIO_VARIANTS[normalizedIdx];
   const resolvedTicket =
     snowTicket !== undefined && snowTicket.trim() !== ''
       ? sanitizeString(snowTicket, 20)
@@ -535,7 +517,7 @@ export function createPopulatedSampleSARSession(
         destination: '10.42.16.0/24',
         port: '8443',
         protocol: 'HTTPS',
-        purpose: 'Mutually authenticated TLS 1.3 ingress from DMZ Enterprise API Gateway to Settlement microservices',
+        purpose: `Mutually authenticated TLS 1.3 ingress from DMZ Enterprise API Gateway to ${variant.projectName}`,
       },
       {
         id: 'fw-02',
@@ -545,7 +527,7 @@ export function createPopulatedSampleSARSession(
         destination: '10.42.32.25/32',
         port: '5432',
         protocol: 'TCP',
-        purpose: 'Encrypted JDBC connection from Private App Subnet to Aurora PostgreSQL Settlement Ledger Database',
+        purpose: `Encrypted database connection from Private App Subnet to isolated data tier for ${variant.projectName}`,
       },
       {
         id: 'fw-03',
@@ -555,7 +537,7 @@ export function createPopulatedSampleSARSession(
         destination: '203.112.84.19/32',
         port: '22',
         protocol: 'SFTP',
-        purpose: 'Outbound SSH-key authenticated + PGP-encrypted T+0 merchant clearing batch exchange to NPCI Partner Endpoint',
+        purpose: 'Outbound SSH-key authenticated + PGP-encrypted batch exchange to Partner DMZ Endpoint',
       },
     ],
     api_endpoints: [
@@ -590,7 +572,7 @@ export function createPopulatedSampleSARSession(
         counterparty: 'Finacle Core Banking System (CBS)',
         direction: 'Bidirectional',
         channel: 'REST API',
-        dataShared: 'Merchant account debit/credit postings, UTR reference numbers, and balance checks',
+        dataShared: 'Account postings, UTR reference numbers, and real-time balance checks',
         frequency: 'Real-time',
       },
       {
@@ -598,7 +580,7 @@ export function createPopulatedSampleSARSession(
         counterparty: 'Partner SFTP Settlement Clearing House',
         direction: 'Outbound',
         channel: 'SFTP / File',
-        dataShared: 'End-of-day settlement reconciliation batch files and dispute chargeback manifests',
+        dataShared: 'End-of-day reconciliation batch files and settlement manifests',
         frequency: 'Daily Nightly',
       },
       {
@@ -612,6 +594,7 @@ export function createPopulatedSampleSARSession(
     ],
   };
 
+  const docPrefix = variant.projectName.split(' ')[0].replace(/[^a-zA-Z0-9]/g, '') || 'SAR';
   const attachments: AttachmentSlotState[] = [
     {
       slotId: 'architecture_diagram',
@@ -622,8 +605,8 @@ export function createPopulatedSampleSARSession(
         {
           id: 'att-arch-01',
           slotId: 'architecture_diagram',
-          filename: 'OmniPay_v2.4_Hybrid_Reference_Architecture.pdf',
-          sanitizedName: 'OmniPay_v2.4_Hybrid_Reference_Architecture.pdf',
+          filename: `${docPrefix}_Reference_Architecture.pdf`,
+          sanitizedName: `${docPrefix}_Reference_Architecture.pdf`,
           mimeType: 'application/pdf',
           sizeBytes: 1_482_910,
           sha256: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
@@ -644,8 +627,8 @@ export function createPopulatedSampleSARSession(
         {
           id: 'att-dfd-01',
           slotId: 'data_flow_diagram',
-          filename: 'OmniPay_L2_Data_Flow_Trust_Boundaries.pdf',
-          sanitizedName: 'OmniPay_L2_Data_Flow_Trust_Boundaries.pdf',
+          filename: `${docPrefix}_L2_Data_Flow_Trust_Boundaries.pdf`,
+          sanitizedName: `${docPrefix}_L2_Data_Flow_Trust_Boundaries.pdf`,
           mimeType: 'application/pdf',
           sizeBytes: 942_110,
           sha256: '4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a',
@@ -666,8 +649,8 @@ export function createPopulatedSampleSARSession(
         {
           id: 'att-seq-01',
           slotId: 'api_sequence_diagram',
-          filename: 'OmniPay_mTLS_OAuth2_API_Sequence.png',
-          sanitizedName: 'OmniPay_mTLS_OAuth2_API_Sequence.png',
+          filename: `${docPrefix}_mTLS_OAuth2_API_Sequence.png`,
+          sanitizedName: `${docPrefix}_mTLS_OAuth2_API_Sequence.png`,
           mimeType: 'image/png',
           sizeBytes: 618_400,
           sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
@@ -688,8 +671,8 @@ export function createPopulatedSampleSARSession(
         {
           id: 'att-evd-01',
           slotId: 'other_evidence',
-          filename: 'Vendor_SOC2_TypeII_and_VAPT_Signoff_2026.pdf',
-          sanitizedName: 'Vendor_SOC2_TypeII_and_VAPT_Signoff_2026.pdf',
+          filename: `${docPrefix}_SOC2_TypeII_and_VAPT_Signoff_2026.pdf`,
+          sanitizedName: `${docPrefix}_SOC2_TypeII_and_VAPT_Signoff_2026.pdf`,
           mimeType: 'application/pdf',
           sizeBytes: 2_140_000,
           sha256: '2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae',
@@ -885,10 +868,6 @@ export function createBlankSARSession(
     DEFAULT_DEFINITION_VERSION
   );
   return blankSar;
-}
-
-export function createSeedSARs(): SARRecord[] {
-  return [createPopulatedSampleSARSession(USER_PERSONAS[0])];
 }
 
 function isSafeSARRecord(candidate: unknown): candidate is SARRecord {
@@ -1101,41 +1080,3 @@ export async function computeBrowserSha256(sar: SARRecord): Promise<string> {
   return hex.repeat(8);
 }
 
-export function computeAuditEventHash(
-  ev: Pick<AuditEvent, 'id' | 'timestamp' | 'actorId' | 'actorRole' | 'action' | 'summary' | 'prevHash'>
-): string {
-  const canonical = `${ev.id}|${ev.timestamp}|${ev.actorId}|${ev.actorRole}|${ev.action}|${ev.summary}|${ev.prevHash}`;
-  let h1 = 0x811c9dc5;
-  let h2 = 0x01000193;
-  let h3 = 0x9e3779b9;
-  let h4 = 0x85ebca6b;
-  for (let i = 0; i < canonical.length; i++) {
-    const code = canonical.charCodeAt(i);
-    h1 = Math.imul(h1 ^ code, 0x01000193);
-    h2 = Math.imul(h2 ^ (code + i), 0x85ebca6b);
-    h3 = Math.imul(h3 ^ (code ^ (i & 0xff)), 0xc2b2ae35);
-    h4 = Math.imul(h4 ^ ((code << 3) | (code >>> 5)), 0x27d4eb2f);
-  }
-  return [h1, h2, h3, h4, h1 ^ h3, h2 ^ h4, h1 ^ h4, h2 ^ h3]
-    .map((n) => (n >>> 0).toString(16).padStart(8, '0'))
-    .join('');
-}
-
-const GENESIS_AUDIT_BASE = {
-  id: 'aud-init-001',
-  timestamp: '2026-10-25T00:00:00.000Z',
-  actorId: 'usr-req-varshith',
-  actorName: 'Varshith',
-  actorRole: 'requester' as const,
-  action: 'RULES_PUBLISHED' as const,
-  summary:
-    'Initialized SAR Assist def-v1.5.0 deterministic rules engine in ephemeral session-storage mode (S3-ready) with pre-populated end-to-end sample SAR.',
-  prevHash: '0000000000000000000000000000000000000000000000000000000000000000',
-};
-
-export const INITIAL_AUDIT_EVENTS: AuditEvent[] = [
-  {
-    ...GENESIS_AUDIT_BASE,
-    eventHash: computeAuditEventHash(GENESIS_AUDIT_BASE),
-  },
-];

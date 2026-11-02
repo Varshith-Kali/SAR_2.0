@@ -94,6 +94,29 @@ export const PreliminaryChecklistView: React.FC<PreliminaryChecklistViewProps> =
   const isReadOnly = sar.status === 'submitted';
   const flowGates = useMemo(() => evaluateFlowGates(sar, definition), [sar, definition]);
 
+  const stageProgressMap = useMemo(() => {
+    const map = new Map<number, { total: number; answered: number }>();
+    for (const q of definition.questions) {
+      if (q.stage === undefined || !visibleQIds.has(q.id)) continue;
+      let entry = map.get(q.stage);
+      if (!entry) {
+        entry = { total: 0, answered: 0 };
+        map.set(q.stage, entry);
+      }
+      entry.total++;
+      const v = sar.answers[q.id]?.value;
+      if (
+        v !== undefined &&
+        v !== null &&
+        v !== '' &&
+        !(Array.isArray(v) && v.length === 0)
+      ) {
+        entry.answered++;
+      }
+    }
+    return map;
+  }, [definition.questions, visibleQIds, sar.answers]);
+
   const stageQuestions = useMemo(
     () =>
       definition.questions.filter(
@@ -228,20 +251,9 @@ export const PreliminaryChecklistView: React.FC<PreliminaryChecklistViewProps> =
           </div>
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
             {STAGES.map((st) => {
-              const qsInStage = definition.questions.filter(
-                (q) => q.stage === st.num && visibleQIds.has(q.id)
-              );
-              const answeredInStage = qsInStage.filter((q) => {
-                const v = sar.answers[q.id]?.value;
-                return (
-                  v !== undefined &&
-                  v !== null &&
-                  v !== '' &&
-                  !(Array.isArray(v) && v.length === 0)
-                );
-              }).length;
+              const prog = stageProgressMap.get(st.num) || { total: 0, answered: 0 };
               const stGate = flowGates.stages[st.num];
-              const isComplete = stGate?.complete && qsInStage.length > 0;
+              const isComplete = stGate?.complete && prog.total > 0;
               const isUnlocked = stGate?.unlocked ?? true;
               const isCurrent = activeStage === st.num;
 
@@ -280,7 +292,7 @@ export const PreliminaryChecklistView: React.FC<PreliminaryChecklistViewProps> =
                     {st.num}. {st.title}
                   </span>
                   <span className="font-mono text-[10px] opacity-75">
-                    ({answeredInStage}/{qsInStage.length})
+                    ({prog.answered}/{prog.total})
                   </span>
                 </button>
               );
@@ -298,20 +310,9 @@ export const PreliminaryChecklistView: React.FC<PreliminaryChecklistViewProps> =
           </div>
           <nav className="space-y-1.5">
             {STAGES.map((st) => {
-              const qsInStage = definition.questions.filter(
-                (q) => q.stage === st.num && visibleQIds.has(q.id)
-              );
-              const answeredInStage = qsInStage.filter((q) => {
-                const v = sar.answers[q.id]?.value;
-                return (
-                  v !== undefined &&
-                  v !== null &&
-                  v !== '' &&
-                  !(Array.isArray(v) && v.length === 0)
-                );
-              }).length;
+              const prog = stageProgressMap.get(st.num) || { total: 0, answered: 0 };
               const stGate = flowGates.stages[st.num];
-              const isComplete = stGate?.complete && qsInStage.length > 0;
+              const isComplete = stGate?.complete && prog.total > 0;
               const isUnlocked = stGate?.unlocked ?? true;
               const isCurrent = activeStage === st.num;
 
@@ -366,7 +367,7 @@ export const PreliminaryChecklistView: React.FC<PreliminaryChecklistViewProps> =
                         : 'text-zinc-400'
                     }`}
                   >
-                    {answeredInStage}/{qsInStage.length}
+                    {prog.answered}/{prog.total}
                   </span>
                 </button>
               );

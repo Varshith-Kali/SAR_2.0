@@ -157,6 +157,10 @@ export interface CompactSarAiPayload {
  * Also calculates token efficiency telemetry comparing the compact delta
  * against the full static questionnaire baseline.
  */
+const CMDB_APP_BY_ID: ReadonlyMap<string, string> = new Map(
+  CMDB_APPLICATIONS.map((a) => [a.id, a.canonicalName])
+);
+
 export function buildCompactSarAiPayload(
   sar: SARRecord,
   definition: DefinitionVersion = DEFAULT_DEFINITION_VERSION
@@ -166,7 +170,7 @@ export function buildCompactSarAiPayload(
 } {
   const evalRes = sar.evaluation;
   const connectedApps = sar.basics.connectedAppIds
-    .map((id) => CMDB_APPLICATIONS.find((a) => a.id === id)?.canonicalName || id)
+    .map((id) => CMDB_APP_BY_ID.get(id) || id)
     .concat(sar.basics.customConnectedApps)
     .map((a) => clamp(sanitizeText(a), 100))
     .slice(0, 20);

@@ -298,6 +298,16 @@ function normalizeQuestionResponseValues(questionId: string, val: unknown): stri
   return result;
 }
 
+// Precomputed O(1) lookup mapping (questionId/code -> QuestionDefinition)
+const STATIC_QUESTION_DEF_MAP: ReadonlyMap<string, (typeof DEFAULT_DEFINITION_VERSION.questions)[number]> = (() => {
+  const map = new Map<string, (typeof DEFAULT_DEFINITION_VERSION.questions)[number]>();
+  for (const q of DEFAULT_DEFINITION_VERSION.questions) {
+    map.set(q.id, q);
+    map.set(q.code, q);
+  }
+  return map;
+})();
+
 interface TagExtractionRule {
   questionId: string;
   optionMatch: string;
@@ -309,6 +319,8 @@ interface TagExtractionRule {
 const OPTION_TO_TAG_RULES: ReadonlyArray<TagExtractionRule> = Object.freeze([
   // Hosting & Topology (P5, P10, M11_Q1)
   { questionId: 'P5', optionMatch: 'hybrid', tag: 'TOPOLOGY:HYBRID_CLOUD_DC', category: 'TOPOLOGY', label: 'Hybrid Cloud + Bank DC Topology' },
+  { questionId: 'P5', optionMatch: 'bank_aws', tag: 'TOPOLOGY:BANK_CLOUD_VPC', category: 'TOPOLOGY', label: 'Bank Private Cloud (AWS/Azure/GCP)' },
+  { questionId: 'P5', optionMatch: 'other_cloud', tag: 'TOPOLOGY:BANK_CLOUD_VPC', category: 'TOPOLOGY', label: 'Bank Private Cloud (AWS/Azure/GCP)' },
   { questionId: 'P5', optionMatch: 'cloud', tag: 'TOPOLOGY:BANK_CLOUD_VPC', category: 'TOPOLOGY', label: 'Bank Private Cloud (AWS/Azure/GCP)' },
   { questionId: 'P5', optionMatch: 'bank_dc', tag: 'TOPOLOGY:ON_PREM_DC', category: 'TOPOLOGY', label: 'On-Premises Bank Data Centre' },
   { questionId: 'P5', optionMatch: 'vendor_saas', tag: 'TOPOLOGY:VENDOR_SAAS', category: 'TOPOLOGY', label: 'Vendor-Hosted SaaS Platform' },
@@ -344,14 +356,15 @@ const OPTION_TO_TAG_RULES: ReadonlyArray<TagExtractionRule> = Object.freeze([
   { questionId: 'P26', optionMatch: 'pci_dss', tag: 'COMPLIANCE:PCI_DSS_V4', category: 'COMPLIANCE', label: 'PCI-DSS v4.0 Standard' },
   { questionId: 'P26', optionMatch: 'dpdp_law', tag: 'COMPLIANCE:DPDP_PRIVACY', category: 'COMPLIANCE', label: 'DPDP Data Privacy Act' },
 
-  // Cloud Service Selectors (M11_Q3)
-  { questionId: 'M11_Q3', optionMatch: 'Q1.4', tag: 'TECH:AWS_EKS', category: 'TECH', label: 'Amazon EKS Kubernetes Cluster' },
-  { questionId: 'M11_Q3', optionMatch: 'Q1.6', tag: 'TECH:AWS_ECR', category: 'TECH', label: 'Amazon ECR Container Registry' },
-  { questionId: 'M11_Q3', optionMatch: 'Q1.8', tag: 'TECH:AWS_S3', category: 'TECH', label: 'Amazon S3 Object Storage' },
-  { questionId: 'M11_Q3', optionMatch: 'Q1.10', tag: 'TECH:AWS_RDS', category: 'TECH', label: 'Amazon RDS / Aurora Database' },
-  { questionId: 'M11_Q3', optionMatch: 'Q1.14', tag: 'TECH:REDIS_CACHE', category: 'TECH', label: 'Amazon ElastiCache Redis' },
-  { questionId: 'M11_Q3', optionMatch: 'Q1.15', tag: 'TECH:AWS_KMS', category: 'TECH', label: 'AWS KMS Customer-Managed Keys' },
-  { questionId: 'M11_Q3', optionMatch: 'Q1.16', tag: 'TECH:AWS_SECRETS_MGR', category: 'TECH', label: 'AWS Secrets Manager Vault' },
+  // Cloud Service Selectors (M11_Q3 — aligned 1:1 with definitions.ts Q1.1..Q1.24)
+  { questionId: 'M11_Q3', optionMatch: 'Q1.2', tag: 'TECH:AWS_EKS', category: 'TECH', label: 'Amazon EKS Kubernetes Cluster' },
+  { questionId: 'M11_Q3', optionMatch: 'Q1.4', tag: 'TECH:AWS_ECR', category: 'TECH', label: 'Amazon ECR Container Registry' },
+  { questionId: 'M11_Q3', optionMatch: 'Q1.6', tag: 'TECH:AWS_S3', category: 'TECH', label: 'Amazon S3 Object Storage' },
+  { questionId: 'M11_Q3', optionMatch: 'Q1.8', tag: 'TECH:AWS_RDS', category: 'TECH', label: 'Amazon RDS / Aurora Database' },
+  { questionId: 'M11_Q3', optionMatch: 'Q1.10', tag: 'TECH:REDIS_CACHE', category: 'TECH', label: 'Amazon ElastiCache Redis' },
+  { questionId: 'M11_Q3', optionMatch: 'Q1.14', tag: 'TECH:AWS_KMS', category: 'TECH', label: 'AWS KMS Customer-Managed Keys' },
+  { questionId: 'M11_Q3', optionMatch: 'Q1.15', tag: 'TECH:AWS_SECRETS_MGR', category: 'TECH', label: 'AWS Secrets Manager Vault' },
+  { questionId: 'M11_Q3', optionMatch: 'Q1.16', tag: 'TECH:KAFKA_MSK', category: 'TECH', label: 'Amazon MSK Managed Kafka' },
   { questionId: 'M11_Q3', optionMatch: 'Q1.19', tag: 'TECH:AWS_TRANSFER_SFTP', category: 'TECH', label: 'AWS Transfer Family SFTP' },
   { questionId: 'M11_Q3', optionMatch: 'Q1.24', tag: 'TECH:AWS_BEDROCK_LLM', category: 'TECH', label: 'Amazon Bedrock Foundation LLM' },
 
@@ -642,6 +655,78 @@ export class SarPatternLearningStore {
   private rejectedNonSubmittedCount = 0;
   private deduplicatedCount = 0;
   private lastLearnedAt = new Date().toISOString();
+  private cachedSnapshot: PatternCorpusSnapshot | null = null;
+  private cachedSnapshotVersionId = '';
+
+  /**
+   * Fast O(1) getter for health probes and lightweight telemetry without computing full snapshots.
+   */
+  public getTotalSubmittedCount(): number {
+    return this.totalSubmittedLearned;
+  }
+
+  /**
+   * Decrements sliding-window frequency maps when the ring buffer evicts the oldest genome at MAX_STORED_GENOMES.
+   */
+  private decrementGenomeStats(evicted: SARPatternGenome): void {
+    for (const detail of evicted.tagDetails) {
+      const existing = this.tagCounts.get(detail.tag);
+      if (existing) {
+        existing.count = Math.max(0, existing.count - 1);
+        if (existing.count === 0) this.tagCounts.delete(detail.tag);
+      }
+    }
+
+    const antecedents = evicted.tagDetails.filter((d) =>
+      ['TOPOLOGY', 'DATA', 'IDENTITY', 'CHANNEL', 'FLAG', 'TECH'].includes(d.category)
+    );
+    const consequents = evicted.tagDetails.filter((d) =>
+      ['CONTROL', 'COMPLIANCE', 'TECH'].includes(d.category)
+    );
+    for (const ant of antecedents) {
+      const conMap = this.antecedentEdges.get(ant.tag);
+      if (!conMap) continue;
+      for (const con of consequents) {
+        if (ant.tag === con.tag) continue;
+        const nextCount = (conMap.get(con.tag) || 1) - 1;
+        if (nextCount <= 0) conMap.delete(con.tag);
+        else conMap.set(con.tag, nextCount);
+      }
+    }
+
+    for (const [qCode, optIds] of Object.entries(evicted.questionResponses)) {
+      const bucket = this.questionConsensus.get(qCode);
+      if (!bucket) continue;
+      bucket.total = Math.max(0, bucket.total - 1);
+      for (const optId of optIds) {
+        if (optId.length > 64 || optId.includes(' ')) continue;
+        const nextCnt = (bucket.options.get(optId) || 1) - 1;
+        if (nextCnt <= 0) bucket.options.delete(optId);
+        else bucket.options.set(optId, nextCnt);
+      }
+    }
+
+    const archStat = this.archetypeStats.get(evicted.archetypeId);
+    if (archStat) {
+      archStat.count = Math.max(0, archStat.count - 1);
+      archStat.riskScoreSum = Math.max(0, archStat.riskScoreSum - evicted.riskScore);
+      for (const t of evicted.tags) {
+        if (!t.startsWith('MODULE:') && !t.startsWith('ARCHETYPE:')) {
+          const nextCnt = (archStat.tagFreq.get(t) || 1) - 1;
+          if (nextCnt <= 0) archStat.tagFreq.delete(t);
+          else archStat.tagFreq.set(t, nextCnt);
+        }
+      }
+      for (const [modCode, bitIdx] of Object.entries(MODULE_INDEX_MAP)) {
+        if (modCode === 'M0' || modCode === 'M17') continue;
+        if ((evicted.moduleBitmask & (1 << bitIdx)) !== 0) {
+          const nextCnt = (archStat.moduleFreq.get(modCode as ModuleCode) || 1) - 1;
+          if (nextCnt <= 0) archStat.moduleFreq.delete(modCode as ModuleCode);
+          else archStat.moduleFreq.set(modCode as ModuleCode, nextCnt);
+        }
+      }
+    }
+  }
 
   /**
    * STRICT SUBMISSION GATE:
@@ -661,6 +746,12 @@ export class SarPatternLearningStore {
     // 1. Enforce "Only Submitted Ones" invariant
     if (!sar || sar.status !== 'submitted') {
       this.rejectedNonSubmittedCount++;
+      if (this.cachedSnapshot) {
+        this.cachedSnapshot = {
+          ...this.cachedSnapshot,
+          rejectedNonSubmittedCount: this.rejectedNonSubmittedCount,
+        };
+      }
       return {
         ingested: false,
         status: 'REJECTED_NOT_SUBMITTED',
@@ -675,6 +766,12 @@ export class SarPatternLearningStore {
     // 2. Enforce idempotency (prevent duplicate network retries from skewing distribution)
     if (this.idempotencySet.has(genome.idempotencyKey)) {
       this.deduplicatedCount++;
+      if (this.cachedSnapshot) {
+        this.cachedSnapshot = {
+          ...this.cachedSnapshot,
+          deduplicatedCount: this.deduplicatedCount,
+        };
+      }
       return {
         ingested: false,
         status: 'DUPLICATE_SKIPPED',
@@ -691,14 +788,18 @@ export class SarPatternLearningStore {
     }
     this.idempotencySet.add(genome.idempotencyKey);
 
-    // Bounded Ring Buffer for stored genomes (zero memory leak guarantee)
+    // Bounded Ring Buffer for stored genomes (zero memory leak guarantee + synchronized counters)
     if (this.genomes.length >= MAX_STORED_GENOMES) {
-      this.genomes.shift();
+      const evicted = this.genomes.shift();
+      if (evicted) {
+        this.decrementGenomeStats(evicted);
+      }
     }
     this.genomes.push(genome);
 
     this.totalSubmittedLearned++;
     this.lastLearnedAt = new Date().toISOString();
+    this.cachedSnapshot = null;
 
     // 3. Increment Tag Frequencies O(K)
     for (const detail of genome.tagDetails) {
@@ -799,15 +900,24 @@ export class SarPatternLearningStore {
 
   /**
    * Returns a full snapshot of the learned pattern corpus.
+   * Memoized with a dirty flag so read-heavy endpoints run in O(1) zero-allocation time.
    */
   public getCorpusSnapshot(
     definition: DefinitionVersion = DEFAULT_DEFINITION_VERSION
   ): PatternCorpusSnapshot {
-    const total = Math.max(1, this.totalSubmittedLearned);
+    if (
+      this.cachedSnapshot &&
+      this.cachedSnapshotVersionId === definition.versionId
+    ) {
+      return this.cachedSnapshot;
+    }
+
+    const activeWindowTotal = Math.max(1, this.genomes.length || this.totalSubmittedLearned);
 
     const archetypeClusters: ArchetypeClusterSummary[] = Array.from(
       this.archetypeStats.entries()
     )
+      .filter(([, st]) => st.count > 0)
       .map(([archetypeId, st]) => {
         const dominantTags = Array.from(st.tagFreq.entries())
           .sort((a, b) => b[1] - a[1])
@@ -822,7 +932,7 @@ export class SarPatternLearningStore {
           archetypeId,
           archetypeLabel: st.label,
           submittedCount: st.count,
-          sharePct: Math.round((st.count / total) * 100),
+          sharePct: Math.round((st.count / activeWindowTotal) * 100),
           dominantTags,
           typicalModules,
           averageRiskScore: Math.round(st.riskScoreSum / Math.max(1, st.count)),
@@ -837,7 +947,7 @@ export class SarPatternLearningStore {
         category: info.category,
         label: info.label,
         count: info.count,
-        supportPct: Math.round((info.count / total) * 100),
+        supportPct: Math.round((info.count / activeWindowTotal) * 100),
       }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 30);
@@ -856,7 +966,10 @@ export class SarPatternLearningStore {
         }
       }
       if (!topOpt) continue;
-      const qDef = definition.questions.find((q) => q.id === qCode || q.code === qCode);
+      const qDef =
+        definition === DEFAULT_DEFINITION_VERSION
+          ? STATIC_QUESTION_DEF_MAP.get(qCode)
+          : definition.questions.find((q) => q.id === qCode || q.code === qCode);
       const optLabel = qDef?.options?.find((o) => o.id === topOpt)?.label || topOpt;
       questionConsensus[qCode] = {
         topOptionId: topOpt,
@@ -866,7 +979,7 @@ export class SarPatternLearningStore {
       };
     }
 
-    return {
+    const snapshot: PatternCorpusSnapshot = {
       engineVersion: PATTERN_ENGINE_VERSION,
       totalSubmittedLearned: this.totalSubmittedLearned,
       rejectedNonSubmittedCount: this.rejectedNonSubmittedCount,
@@ -878,6 +991,10 @@ export class SarPatternLearningStore {
       strongestCoOccurrences,
       questionConsensus,
     };
+
+    this.cachedSnapshot = snapshot;
+    this.cachedSnapshotVersionId = definition.versionId;
+    return snapshot;
   }
 
   /**

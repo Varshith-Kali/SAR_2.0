@@ -194,6 +194,31 @@ export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
   const hardRequiredQIds = useMemo(() => new Set(evalRes?.hardRequiredQuestionIds || []), [evalRes?.hardRequiredQuestionIds]);
 
   const currentModDef = definition.modules.find((m) => m.code === currentModInfo?.code);
+
+  // Pre-compute visible & answered question counts per module in a single O(N) pass for smooth rendering
+  const moduleProgressMap = useMemo(() => {
+    const map = new Map<ModuleCode, { total: number; answered: number }>();
+    for (const q of definition.questions) {
+      if (q.stage !== undefined || !visibleQIds.has(q.id)) continue;
+      let entry = map.get(q.moduleId);
+      if (!entry) {
+        entry = { total: 0, answered: 0 };
+        map.set(q.moduleId, entry);
+      }
+      entry.total++;
+      const v = sar.answers[q.id]?.value;
+      if (
+        v !== undefined &&
+        v !== null &&
+        v !== '' &&
+        !(Array.isArray(v) && v.length === 0)
+      ) {
+        entry.answered++;
+      }
+    }
+    return map;
+  }, [definition.questions, visibleQIds, sar.answers]);
+
   const allModuleQuestions = useMemo(
     () =>
       definition.questions.filter(
@@ -346,22 +371,11 @@ export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
           </div>
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
             {checklistModules.map((mod) => {
-              const qs = definition.questions.filter(
-                (q) => q.stage === undefined && q.moduleId === mod.code && visibleQIds.has(q.id)
-              );
-              const answered = qs.filter((q) => {
-                const v = sar.answers[q.id]?.value;
-                return (
-                  v !== undefined &&
-                  v !== null &&
-                  v !== '' &&
-                  !(Array.isArray(v) && v.length === 0)
-                );
-              }).length;
+              const prog = moduleProgressMap.get(mod.code) || { total: 0, answered: 0 };
               const isComplete =
                 mod.code === 'M17'
                   ? sar.attachments.some((s) => s.files.length > 0)
-                  : qs.length > 0 && answered === qs.length;
+                  : prog.total > 0 && prog.answered === prog.total;
               const isSelected = currentModInfo?.code === mod.code;
 
               return (
@@ -385,7 +399,7 @@ export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
                   <span>{mod.shortTitle}</span>
                   {mod.code !== 'M17' && (
                     <span className="font-mono text-[10px] opacity-75">
-                      ({answered}/{qs.length})
+                      ({prog.answered}/{prog.total})
                     </span>
                   )}
                 </button>
@@ -413,22 +427,11 @@ export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
 
           <nav className="space-y-1.5 max-h-[65vh] overflow-y-auto pr-1">
             {checklistModules.map((mod) => {
-              const qs = definition.questions.filter(
-                (q) => q.stage === undefined && q.moduleId === mod.code && visibleQIds.has(q.id)
-              );
-              const answered = qs.filter((q) => {
-                const v = sar.answers[q.id]?.value;
-                return (
-                  v !== undefined &&
-                  v !== null &&
-                  v !== '' &&
-                  !(Array.isArray(v) && v.length === 0)
-                );
-              }).length;
+              const prog = moduleProgressMap.get(mod.code) || { total: 0, answered: 0 };
               const isComplete =
                 mod.code === 'M17'
                   ? sar.attachments.some((s) => s.files.length > 0)
-                  : qs.length > 0 && answered === qs.length;
+                  : prog.total > 0 && prog.answered === prog.total;
               const isSelected = currentModInfo?.code === mod.code;
 
               return (
@@ -471,7 +474,7 @@ export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
                       ? isComplete
                         ? 'Done'
                         : 'Open'
-                      : `${answered}/${qs.length}`}
+                      : `${prog.answered}/${prog.total}`}
                   </span>
                 </button>
               );
@@ -866,83 +869,6 @@ export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
                           }
                           className="w-full px-3.5 py-2.5 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/60 dark:bg-zinc-950 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:bg-white dark:focus:bg-zinc-900 focus:border-zinc-950 dark:focus:border-zinc-300 transition-colors leading-relaxed"
                         />
-
-                        {!isReadOnly && (
-                          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                            <span className="text-[11px] font-mono text-zinc-500 dark:text-zinc-400 mr-1">
-                              Sample answers (click to fill &amp; edit):
-                            </span>
-                            {(
-                              filteredOptions.length > 0
-                                ? filteredOptions.map((opt, idx) => ({
-                                    label: `Sample ${idx + 1}: ${
-                                      opt.label.length > 52
-                                        ? opt.label.slice(0, 52).trim() + '…'
-                                        : opt.label
-                                    }`,
-                                    text: opt.label,
-                                  }))
-                                : (
-                                    {
-                                      M2_Q3: [
-                                        {
-                                          label: 'Sample 1: Maker / Checker / Admin Roles',
-                                          text: 'User roles are separated into Viewer (read-only), Maker (create/initiate), Checker (approve), and Admin. Roles are assigned via Active Directory / SSO after manager approval, and admin sessions are recorded via CyberArk PAM.',
-                                        },
-                                        {
-                                          label: 'Sample 2: Standard Employee & Admin Roles',
-                                          text: 'Standard employees only access their own records, while System Administrators require ticket approval and two-person (Maker-Checker) review for configuration changes.',
-                                        },
-                                      ],
-                                      M3_Q2: [
-                                        {
-                                          label: 'Sample 1: Web -> App -> Database Flow',
-                                          text: '1. User or client connects over HTTPS (TLS 1.2+) to the Web Load Balancer / WAF in the DMZ.\n2. Requests pass through the API Gateway / Reverse Proxy to the Application servers in the private App Zone.\n3. Application servers query the encrypted Database in the isolated Database Zone over restricted firewall ports.',
-                                        },
-                                        {
-                                          label: 'Sample 2: Internal Staff Intranet Flow',
-                                          text: '1. Bank employees log in with Bank Single Sign-On (AD + MFA) over the internal corporate network.\n2. The internal Application tier processes requests and stores records in the isolated Database tier.',
-                                        },
-                                      ],
-                                      M5_Q5: [
-                                        {
-                                          label: 'Sample 1: ISO 8583 / Socket over TLS',
-                                          text: 'Custom ISO 8583 / TCP payment messages are wrapped inside an encrypted TLS 1.2+ / IPsec VPN tunnel, restricted to specific partner IPs, and validated for message format and MAC checksums.',
-                                        },
-                                      ],
-                                      M5_Q6: [
-                                        {
-                                          label: 'Sample 1: Internal Low-Latency mTLS Link',
-                                          text: 'Direct internal service-to-service call required for sub-10ms latency; protected by two-way certificates (mTLS), strict firewall IP allowlisting, schema validation, and rate limiting.',
-                                        },
-                                      ],
-                                      M16_Q2: [
-                                        {
-                                          label: 'Sample 1: Mumbai Primary + Hyderabad DR',
-                                          text: 'Primary environment runs in Mumbai (ap-south-1) with Active-Passive Disaster Recovery in Hyderabad (ap-south-2). Automated encrypted backups run daily with Object Lock/Vault Lock, and DR failover drills are tested twice a year.',
-                                        },
-                                        {
-                                          label: 'Sample 2: Data Center HA + Daily Encrypted Backups',
-                                          text: 'Deployed across redundant servers in Primary Data Center with real-time database replication to the DR site. Encrypted backups are taken daily and verified during semi-annual DR drills.',
-                                        },
-                                      ],
-                                    }[q.id] || []
-                                  )
-                            ).map((tpl) => (
-                              <button
-                                key={tpl.label}
-                                type="button"
-                                title={tpl.text}
-                                onClick={() =>
-                                  onAnswerQuestion(q.id, tpl.text, { comment: ans?.comment })
-                                }
-                                className="px-2.5 py-1 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 hover:bg-zinc-100 dark:bg-zinc-800/80 dark:hover:bg-zinc-800 text-[11px] font-medium text-zinc-700 dark:text-zinc-300 transition-colors cursor-pointer text-left"
-                              >
-                                + {tpl.label}
-                              </button>
-                            ))}
-                          </div>
-                        )}
                       </div>
                     ) : q.answerType === 'multi_select' ? (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

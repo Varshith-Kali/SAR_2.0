@@ -11,6 +11,7 @@ import {
   FirewallRuleRow,
   IntegrationRow,
   ModuleCode,
+  ModuleDefinition,
   OpenItemEntry,
   QuestionDefinition,
   RepeaterTablesData,
@@ -20,6 +21,60 @@ import {
   ServerRow,
   UnlockedModuleInfo,
 } from './types';
+
+interface DefinitionIndex {
+  questionById: Map<string, QuestionDefinition>;
+  moduleByCode: Map<ModuleCode, ModuleDefinition>;
+  prelimQuestions: QuestionDefinition[];
+  prelimIds: Set<string>;
+  questionsByStage: Map<number, QuestionDefinition[]>;
+  questionsByModule: Map<ModuleCode, QuestionDefinition[]>;
+}
+
+const definitionIndexCache = new WeakMap<DefinitionVersion, DefinitionIndex>();
+
+function getDefinitionIndex(definition: DefinitionVersion): DefinitionIndex {
+  const cached = definitionIndexCache.get(definition);
+  if (cached) return cached;
+
+  const questionById = new Map<string, QuestionDefinition>();
+  const moduleByCode = new Map<ModuleCode, ModuleDefinition>();
+  const prelimQuestions: QuestionDefinition[] = [];
+  const prelimIds = new Set<string>();
+  const questionsByStage = new Map<number, QuestionDefinition[]>();
+  const questionsByModule = new Map<ModuleCode, QuestionDefinition[]>();
+
+  for (const m of definition.modules) {
+    moduleByCode.set(m.code, m);
+    questionsByModule.set(m.code, []);
+  }
+
+  for (const q of definition.questions) {
+    questionById.set(q.id, q);
+    if (q.stage !== undefined) {
+      prelimQuestions.push(q);
+      prelimIds.add(q.id);
+      const stList = questionsByStage.get(q.stage) || [];
+      stList.push(q);
+      questionsByStage.set(q.stage, stList);
+    } else {
+      const modList = questionsByModule.get(q.moduleId) || [];
+      modList.push(q);
+      questionsByModule.set(q.moduleId, modList);
+    }
+  }
+
+  const index: DefinitionIndex = {
+    questionById,
+    moduleByCode,
+    prelimQuestions,
+    prelimIds,
+    questionsByStage,
+    questionsByModule,
+  };
+  definitionIndexCache.set(definition, index);
+  return index;
+}
 
 // ============================================================================
 // IP, CIDR & PORT VALIDATION UTILITIES
@@ -448,8 +503,8 @@ export function evaluateSAR(
   // question immediately restores its stored answer in a single pass while hidden questions are excluded.
   let unknownCount = 0;
   const effectiveAnswers: Record<string, unknown> = {};
-  const prelimQuestions = definition.questions.filter((q) => q.stage !== undefined);
-  const prelimIds = new Set(prelimQuestions.map((pq) => pq.id));
+  const defIndex = getDefinitionIndex(definition);
+  const { prelimQuestions, prelimIds, questionById, moduleByCode, questionsByModule } = defIndex;
 
   for (const key of Object.keys(answersInput)) {
     if (!prelimIds.has(key) && !key.includes('_Q')) {
@@ -696,9 +751,23 @@ export function evaluateSAR(
     if (overrideTriggersFired.length === 0 && !manualCategories?.fullReviewRequested) {
       flags.scope_narrowed = true;
       // Map P4 changed parts to allowed modules
+      const p9 = (effectiveAnswers['P9'] as string[]) || [];
       const allowedByNarrowing = new Set<ModuleCode>(['M0', 'M1', 'M17']);
+      if (
+        p4.includes('ui') &&
+        Array.isArray(p9) &&
+        (p9.includes('mobile_app') || p9.includes('desktop_app') || p9.includes('kiosk'))
+      ) {
+        allowedByNarrowing.add('M14');
+      }
       if (p4.includes('apis') || p4.includes('integrations') || p4.includes('third_party_connectivity')) {
         allowedByNarrowing.add('M5');
+      }
+      if (p4.includes('integrations')) {
+        if (Array.isArray(p14) && p14.includes('file_transfer')) allowedByNarrowing.add('M6');
+        if (Array.isArray(p14) && (p14.includes('queues_streams') || p14.includes('webhooks'))) {
+          allowedByNarrowing.add('M7');
+        }
       }
       if (p4.includes('third_party_connectivity')) {
         allowedByNarrowing.add('M8');
@@ -717,6 +786,7 @@ export function evaluateSAR(
       }
       if (p4.includes('cloud_k8s_containers')) {
         allowedByNarrowing.add('M11');
+        if (flags.on_prem_hosted) allowedByNarrowing.add('M10');
       }
       if (p4.includes('ai_llm_comp')) {
         allowedByNarrowing.add('M15');
@@ -878,41 +948,44 @@ export function evaluateSAR(
   }
 
   // Fail-Safe Guard (Design Principle #2): Ensure no unlocked module M1..M16 ever renders with 0 visible questions
+  const visibleQuestionSet = new Set(visibleQuestionIds);
   for (const code of MODULE_ORDER) {
     if (code === 'M0' || code === 'M17' || !moduleReasonsMap.has(code)) continue;
-    const hasVisibleInMod = definition.questions.some(
-      (q) => q.stage === undefined && q.moduleId === code && visibleQuestionIds.includes(q.id)
-    );
+    const modQs = questionsByModule.get(code) || [];
+    const hasVisibleInMod = modQs.some((q) => visibleQuestionSet.has(q.id));
     if (!hasVisibleInMod) {
-      const primaryQ = definition.questions.find(
-        (q) => q.stage === undefined && q.moduleId === code
-      );
-      if (primaryQ) {
-        visibleQuestionIds.push(primaryQ.id);
-        const modReasons = Array.from(moduleReasonsMap.get(code)!);
-        questionReasons[primaryQ.id] = [
+      const isManualMod = Boolean(manualCategories?.added?.includes(code));
+      const fallbackQs = isManualMod
+        ? modQs.filter((q) => code !== 'M11' || ['M11_Q1', 'M11_Q2', 'M11_Q3', 'M11_Q4', 'M11_Q5', 'M11_Q6'].includes(q.id))
+        : modQs.slice(0, 1);
+      const modReasons = Array.from(moduleReasonsMap.get(code)!);
+      for (const fq of fallbackQs) {
+        visibleQuestionIds.push(fq.id);
+        visibleQuestionSet.add(fq.id);
+        questionReasons[fq.id] = [
           modReasons[0] || `Baseline question for unlocked module ${code}`,
         ];
-        if (primaryQ.required) {
-          requiredQuestionIds.push(primaryQ.id);
+        if (fq.required) {
+          requiredQuestionIds.push(fq.id);
         }
-        questionRequirementReasons[primaryQ.id] =
-          primaryQ.requireIfReason ||
+        questionRequirementReasons[fq.id] =
+          fq.requireIfReason ||
           'Baseline control question for this unlocked security module.';
       }
     }
   }
 
   // Build ordered activeModules list with accurate visible & required question counts
+  const requiredQuestionSet = new Set(requiredQuestionIds);
+  const hardRequiredQuestionSet = new Set(hardRequiredQuestionIds);
   const activeModules: UnlockedModuleInfo[] = [];
   for (const code of MODULE_ORDER) {
     if (moduleReasonsMap.has(code)) {
-      const modDef = definition.modules.find((m) => m.code === code);
+      const modDef = moduleByCode.get(code);
       if (modDef) {
-        const modVisibleQs = definition.questions.filter(
-          (q) => q.stage === undefined && q.moduleId === code && visibleQuestionIds.includes(q.id)
-        );
-        const modRequiredQs = modVisibleQs.filter((q) => requiredQuestionIds.includes(q.id));
+        const modQs = questionsByModule.get(code) || [];
+        const modVisibleQs = modQs.filter((q) => visibleQuestionSet.has(q.id));
+        const modRequiredQs = modVisibleQs.filter((q) => requiredQuestionSet.has(q.id));
         activeModules.push({
           code: modDef.code,
           title: modDef.title,
@@ -930,7 +1003,7 @@ export function evaluateSAR(
   // Check completion, missing required, and 'I don't know yet' open items
   let answeredCount = 0;
   for (const qId of visibleQuestionIds) {
-    const qDef = definition.questions.find((q) => q.id === qId);
+    const qDef = questionById.get(qId);
     if (!qDef) continue;
     const rawEntry = answersInput[qId];
     const val = effectiveAnswers[qId] ?? getStoredAnswerValue(answersInput, qId);
@@ -940,8 +1013,8 @@ export function evaluateSAR(
       val !== '' &&
       !(Array.isArray(val) && val.length === 0);
 
-    const isQuestionHardReq = hardRequiredQuestionIds.includes(qId);
-    const isQuestionReq = requiredQuestionIds.includes(qId);
+    const isQuestionHardReq = hardRequiredQuestionSet.has(qId);
+    const isQuestionReq = requiredQuestionSet.has(qId);
 
     if (isAnswered) {
       answeredCount++;
@@ -1495,6 +1568,7 @@ export function evaluateFlowGates(
   const basicsComplete = missingBasicsFields.length === 0;
 
   // 2. Phase 2: Preliminary Checklist Stages 1..4 (WHO, HOW, WHERE, WHAT) Sequential Gate
+  const defIndex = getDefinitionIndex(definition);
   const visibleSet = new Set(evalRes.visibleQuestionIds);
   const requiredSet = new Set(evalRes.requiredQuestionIds);
   const hardRequiredSet = new Set(evalRes.hardRequiredQuestionIds);
@@ -1505,8 +1579,9 @@ export function evaluateFlowGates(
   let allPreviousStagesComplete = basicsComplete;
 
   for (let s = 1; s <= 4; s++) {
-    const reqQsInStage = definition.questions.filter(
-      (q) => q.stage === s && visibleSet.has(q.id) && requiredSet.has(q.id)
+    const stageQs = defIndex.questionsByStage.get(s) || [];
+    const reqQsInStage = stageQs.filter(
+      (q) => visibleSet.has(q.id) && requiredSet.has(q.id)
     );
     const missingInStage: string[] = [];
     let answeredReq = 0;

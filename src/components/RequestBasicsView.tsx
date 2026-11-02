@@ -8,7 +8,6 @@ import {
   Plus,
   Search,
   ShieldAlert,
-  Sparkles,
   X,
 } from 'lucide-react';
 import { CMDB_APPLICATIONS } from '../shared/definitions';
@@ -136,31 +135,6 @@ export const RequestBasicsView: React.FC<RequestBasicsViewProps> = ({
             Every field autosaves as you type.
           </p>
         </div>
-
-        {!isReadOnly && !flowGates.basicsComplete && (
-          <button
-            type="button"
-            onClick={() => {
-              onUpdateBasics({
-                projectName:
-                  basics.projectName || 'CorpNet FX Treasury Portal — Real-Time Hedging API',
-                businessRequirement:
-                  basics.businessRequirement ||
-                  'Enable corporate treasury clients to book real-time FX forward contracts via REST API with automated Finacle CBS settlement.',
-                targetGoLiveDate: basics.targetGoLiveDate || '2026-12-15',
-                ticketNo: basics.ticketNo || 'RITM0058102',
-                connectedAppIds:
-                  basics.connectedAppIds.length > 0
-                    ? basics.connectedAppIds
-                    : ['app-cmdb-101', 'app-cmdb-102'],
-              });
-            }}
-            className="sar-glass-step-btn inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-zinc-950 hover:bg-zinc-800 dark:bg-white dark:text-zinc-950 text-white text-xs font-semibold cursor-pointer shrink-0 shadow-2xs transition-all"
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Quick-Fill Sample Context</span>
-          </button>
-        )}
       </div>
 
       <div className="space-y-8">

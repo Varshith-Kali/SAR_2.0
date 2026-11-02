@@ -98,10 +98,16 @@ function sanitizeClientIp(req: Request): string {
   return SAFE_IP_REGEX.test(remote) ? remote : 'unknown';
 }
 
+const MAX_TRACKED_IPS = 50_000;
+
 function checkRateLimit(ip: string): { allowed: boolean; retryAfterSec: number } {
   const now = Date.now();
   const entry = ipRequestCounters.get(ip);
   if (!entry || entry.resetAt <= now) {
+    if (!entry && ipRequestCounters.size >= MAX_TRACKED_IPS) {
+      const oldestIp = ipRequestCounters.keys().next().value;
+      if (oldestIp) ipRequestCounters.delete(oldestIp);
+    }
     ipRequestCounters.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
     return { allowed: true, retryAfterSec: 0 };
   }
@@ -119,6 +125,10 @@ function checkAiRateLimit(ip: string): { allowed: boolean; retryAfterSec: number
   const now = Date.now();
   const entry = ipAiRequestCounters.get(ip);
   if (!entry || entry.resetAt <= now) {
+    if (!entry && ipAiRequestCounters.size >= MAX_TRACKED_IPS) {
+      const oldestIp = ipAiRequestCounters.keys().next().value;
+      if (oldestIp) ipAiRequestCounters.delete(oldestIp);
+    }
     ipAiRequestCounters.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
     return { allowed: true, retryAfterSec: 0 };
   }
@@ -312,12 +322,11 @@ async function startServer() {
   });
 
   app.get('/api/health', (_req, res) => {
-    const corpus = globalPatternLearningStore.getCorpusSnapshot();
     res.json({
       status: 'ok',
       versionId: DEFAULT_DEFINITION_VERSION.versionId,
       patternEngineVersion: PATTERN_ENGINE_VERSION,
-      learnedSubmittedSars: corpus.totalSubmittedLearned,
+      learnedSubmittedSars: globalPatternLearningStore.getTotalSubmittedCount(),
       timestamp: new Date().toISOString(),
     });
   });
