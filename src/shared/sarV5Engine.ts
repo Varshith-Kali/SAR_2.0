@@ -2687,7 +2687,12 @@ export function mapWizardAnswersToSarV5Input(
 
   const p4Raw = extractVal(answers, 'P4');
   const p4Arr = Array.isArray(p4Raw) ? p4Raw.map(String) : [];
-  const p5 = extractVal(answers, 'P5');
+  const p5Raw = extractVal(answers, 'P5');
+  const p5Arr = Array.isArray(p5Raw)
+    ? p5Raw.map(String)
+    : typeof p5Raw === 'string' && p5Raw
+    ? [p5Raw]
+    : [];
   const p6Raw = extractVal(answers, 'P6');
   const p6Arr = Array.isArray(p6Raw) ? p6Raw.map(String) : [];
   const p8Raw = extractVal(answers, 'P8');
@@ -2758,9 +2763,12 @@ export function mapWizardAnswersToSarV5Input(
     );
     setIfUndef(
       'PC-02.8',
-      p5 === 'bank_aws' || p5 === 'other_cloud' || p5 === 'hybrid' || p4Arr.includes('cloud_k8s_containers')
+      p5Arr.includes('bank_aws') ||
+        p5Arr.includes('other_cloud') ||
+        p5Arr.includes('hybrid') ||
+        p4Arr.includes('cloud_k8s_containers')
         ? 'Yes'
-        : p5 === 'bank_dc'
+        : p5Arr.includes('bank_dc')
         ? 'No'
         : ''
     );
@@ -2790,18 +2798,24 @@ export function mapWizardAnswersToSarV5Input(
   if (p25 === 'yes') setIfUndef('PC-03', 'Yes');
   else if (p25 === 'no') setIfUndef('PC-03', 'No');
 
-  if (p27 !== undefined || p5 !== undefined) {
-    const isCloud = p5 === 'bank_aws' || p5 === 'other_cloud' || p5 === 'hybrid';
+  if (p27 !== undefined || p5Arr.length > 0) {
+    const isCloud = p5Arr.includes('bank_aws') || p5Arr.includes('other_cloud') || p5Arr.includes('hybrid');
     setIfUndef('PC-04.1', p27 === 'yes' ? 'Yes' : p27 === 'no' ? 'No' : '');
-    setIfUndef('PC-04.2', isCloud ? 'Yes' : p5 === 'bank_dc' || p5 === 'vendor_saas' ? 'No' : '');
+    setIfUndef(
+      'PC-04.2',
+      isCloud ? 'Yes' : p5Arr.includes('bank_dc') || p5Arr.includes('vendor_saas') ? 'No' : ''
+    );
     setIfUndef('PC-04.3', p27 === 'yes' && p4Arr.includes('database') ? 'Yes' : 'No');
-    setIfUndef('PC-04.4', isCloud && p27 === 'yes' ? 'Yes' : p27 === 'no' || p5 === 'bank_dc' ? 'No' : '');
+    setIfUndef(
+      'PC-04.4',
+      isCloud && p27 === 'yes' ? 'Yes' : p27 === 'no' || p5Arr.includes('bank_dc') ? 'No' : ''
+    );
     setIfUndef('PC-04.5', p14Arr.includes('queues_streams') ? 'Yes' : 'No');
     setIfUndef('PC-04.6', p17 === 'yes' ? 'Yes' : 'No');
     setIfUndef('PC-04.7', p27 === 'no' ? 'Yes' : 'No');
   }
 
-  if (p18 === 'yes' || p1Arr.includes('saas_portal') || p5 === 'vendor_saas') {
+  if (p18 === 'yes' || p1Arr.includes('saas_portal') || p5Arr.includes('vendor_saas')) {
     setIfUndef('PC-05', 'Yes');
   } else if (p18 === 'no') {
     setIfUndef('PC-05', 'No');
@@ -2857,10 +2871,12 @@ export function mapWizardAnswersToSarV5Input(
   if (p9Arr.includes('rdp_vdi')) setIfUndef('HOW-22', 'Yes');
 
   // WHERE-01..WHERE-23
-  if (p5 === 'bank_dc' || p5 === 'hybrid') setIfUndef('WHERE-01', 'Yes');
-  if (p5 === 'bank_aws' || p5 === 'other_cloud' || p5 === 'hybrid') setIfUndef('WHERE-02', 'Yes');
-  if (p5 === 'vendor_saas' || p1Arr.includes('saas_portal')) setIfUndef('WHERE-03', 'Yes');
-  if (p5 === 'other_cloud') setIfUndef('WHERE-04', 'Yes');
+  if (p5Arr.includes('bank_dc') || p5Arr.includes('hybrid')) setIfUndef('WHERE-01', 'Yes');
+  if (p5Arr.includes('bank_aws') || p5Arr.includes('other_cloud') || p5Arr.includes('hybrid')) {
+    setIfUndef('WHERE-02', 'Yes');
+  }
+  if (p5Arr.includes('vendor_saas') || p1Arr.includes('saas_portal')) setIfUndef('WHERE-03', 'Yes');
+  if (p5Arr.includes('other_cloud')) setIfUndef('WHERE-04', 'Yes');
   if (p6Arr.includes('production')) setIfUndef('WHERE-05', 'Yes');
   if (p6Arr.includes('dr')) setIfUndef('WHERE-06', 'Yes');
   if (p6Arr.includes('uat') || p6Arr.includes('development')) setIfUndef('WHERE-07', 'Yes');
@@ -2947,12 +2963,12 @@ export function mapWizardAnswersToSarV5Input(
   if (p21Arr.includes('secrets_keys') || p21Arr.includes('pci')) setIfUndef('WHAT-29', 'Yes');
   if (p22Arr.includes('in_logs') || p21Arr.includes('logs_telemetry')) setIfUndef('WHAT-30', 'Yes');
   if (p17 === 'yes' || p1Arr.includes('firewall_network')) setIfUndef('WHAT-31', 'Yes');
-  if (p5 === 'bank_aws' || p5 === 'other_cloud' || p5 === 'hybrid') {
+  if (p5Arr.includes('bank_aws') || p5Arr.includes('other_cloud') || p5Arr.includes('hybrid')) {
     setIfUndef('WHAT-32', 'Yes');
     setIfUndef('WHAT-34', 'Yes');
   }
   if (p4Arr.includes('cloud_k8s_containers')) setIfUndef('WHAT-33', 'Yes');
-  if (p5 === 'vendor_saas' || p1Arr.includes('saas_portal')) setIfUndef('WHAT-35', 'Yes');
+  if (p5Arr.includes('vendor_saas') || p1Arr.includes('saas_portal')) setIfUndef('WHAT-35', 'Yes');
   if (p28 === 'yes_bank_hosted' || p28 === 'yes_third_party') setIfUndef('WHAT-36', 'Yes');
 
   // Map Cloud Security service selectors from M11_Q3 or direct Q1.x keys
@@ -2965,7 +2981,7 @@ export function mapWizardAnswersToSarV5Input(
       cloudSelectors[sel.selectorId] = directSel;
     } else if (m11q3Arr.length > 0) {
       cloudSelectors[sel.selectorId] = m11q3Arr.includes(sel.selectorId) ? 'Yes' : 'No';
-    } else if (p5 === 'bank_aws' || p5 === 'hybrid') {
+    } else if (p5Arr.includes('bank_aws') || p5Arr.includes('hybrid')) {
       // Infer sensible defaults from preliminary answers when M11_Q3 not yet explicitly answered
       if (['Q1.2', 'Q1.6', 'Q1.8', 'Q1.14', 'Q1.15', 'Q1.20'].includes(sel.selectorId)) {
         cloudSelectors[sel.selectorId] = 'Yes';

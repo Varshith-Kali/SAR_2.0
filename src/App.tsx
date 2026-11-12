@@ -17,8 +17,13 @@ import {
   Zap,
 } from 'lucide-react';
 import { ApiConfigDialog } from './components/ApiConfigDialog';
+import { ArchitectureFlowView } from './components/ArchitectureFlowView';
 import { DetailedModulesView } from './components/DetailedModulesView';
-import { CyberNodeUnderline, CyberScrollTrace } from './components/CyberScrollTrace';
+import {
+  CyberNodeUnderline,
+  CyberScrollTrace,
+  smoothScrollToY,
+} from './components/CyberScrollTrace';
 import { PreliminaryChecklistView } from './components/PreliminaryChecklistView';
 import { RequestBasicsView } from './components/RequestBasicsView';
 import { ReviewAndSubmitView } from './components/ReviewAndSubmitView';
@@ -49,7 +54,6 @@ import {
 } from './shared/seedData';
 import {
   AnswerEntry,
-  AttachmentSlotState,
   DefinitionVersion,
   ModuleCode,
   RepeaterTablesData,
@@ -63,6 +67,7 @@ type ActiveView =
   | 'basics'
   | 'preliminary'
   | 'modules'
+  | 'flow'
   | 'review';
 
 export interface ToastItem {
@@ -86,22 +91,28 @@ function getFormattedISTTime(): string {
   return IST_TIME_FORMATTER.format(new Date()) + ' IST';
 }
 
+function scrollToPageTop(): void {
+  if (typeof window === 'undefined') return;
+  smoothScrollToY(0, 200);
+}
+
 export default function App() {
   const [currentPersona] = useState<UserPersona>(USER_PERSONAS[0]);
   const [activeSar, setActiveSar] = useState<SARRecord>(() =>
     loadBrowserSessionForRequester(USER_PERSONAS[0])
   );
-  // Open the active screen (defaults to 16-Section Checklist on pre-populated sample SAR)
+  // Open the active screen (defaults to Phase 1 Request Basics)
   const [activeView, setActiveView] = useState<ActiveView>(() => {
     if (
       activeSar.lastActiveScreen === 'modules' ||
       activeSar.lastActiveScreen === 'preliminary' ||
+      activeSar.lastActiveScreen === 'flow' ||
       activeSar.lastActiveScreen === 'review' ||
       activeSar.lastActiveScreen === 'basics'
     ) {
       return activeSar.lastActiveScreen;
     }
-    return 'modules';
+    return 'basics';
   });
   const [activePrelimStage, setActivePrelimStage] = useState<number>(1);
   const [activeModuleCode, setActiveModuleCode] = useState<ModuleCode>('M1');
@@ -199,6 +210,11 @@ export default function App() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, []);
+
+  // Always reset scroll position to the top of the page when switching views, stages, or checklist modules
+  useEffect(() => {
+    scrollToPageTop();
+  }, [activeView, activePrelimStage, activeModuleCode]);
 
   // Track scroll position for seamless top header borderless blending (RAF throttled for 120fps smoothness)
   useEffect(() => {
@@ -328,6 +344,7 @@ export default function App() {
 
   const handleNavigatePhase = (sar: SARRecord, explicitScreen?: string) => {
     setMobileMenuOpen(false);
+    scrollToPageTop();
     const gates = evaluateFlowGates(sar, getPinnedDefinition(sar));
 
     if (sar.status === 'submitted') {
@@ -342,7 +359,7 @@ export default function App() {
         setActiveView('review');
       } else if (gates.canAccessModules) {
         pushToast(
-          'Phase 4 Locked',
+          'Phase 5 Locked',
           `${gates.missingDetailedQuestions.length} checklist questions remaining before Review & Submit.`,
           'warning'
         );
@@ -350,8 +367,30 @@ export default function App() {
         setActiveView('modules');
       } else if (gates.canAccessPreliminary) {
         pushToast(
-          'Phase 4 Locked',
+          'Phase 5 Locked',
           `Complete Preliminary Discovery (${gates.missingPreliminaryCodes.length} remaining) first.`,
+          'warning'
+        );
+        setActivePrelimStage(gates.maxUnlockedStage);
+        setActiveView('preliminary');
+      } else {
+        pushToast(
+          'Phase 1 Required',
+          `Complete ${gates.missingBasicsFields.length} required fields in Request Basics first.`,
+          'warning'
+        );
+        setActiveView('basics');
+      }
+      return;
+    }
+
+    if (targetScreen === 'flow') {
+      if (gates.canAccessModules) {
+        setActiveView('flow');
+      } else if (gates.canAccessPreliminary) {
+        pushToast(
+          'Phase 4 Locked',
+          `Complete Preliminary Discovery (${gates.missingPreliminaryCodes.length} remaining) to view Architecture Flow.`,
           'warning'
         );
         setActivePrelimStage(gates.maxUnlockedStage);
@@ -422,11 +461,71 @@ export default function App() {
   const handleUpdateBasics = (patch: Partial<RequestBasicsData>) => {
     const currentSar = activeSarRef.current;
     const nextBasics = { ...currentSar.basics, ...patch };
+    const now = new Date().toISOString();
+    let nextAnswers = currentSar.answers;
+    let nextEvaluation = currentSar.evaluation;
+
+    // Automatically wire Phase 1 Preliminary Data Types into Stage 1 (P21 & P20)
+    if (patch.preliminaryDataTypes !== undefined) {
+      const DATA_TYPE_TO_P21: Record<string, string> = {
+        'Personal data (PII)': 'pii',
+        'Card data (PCI)': 'pci',
+        'Financial records': 'financial',
+        'Login secrets or keys': 'secrets_keys',
+        'Source code or IP': 'source_code_ip',
+        'Logs and telemetry': 'logs_telemetry',
+        'Configuration data': 'config_metadata',
+      };
+      const mappedP21 = patch.preliminaryDataTypes
+        .map((dt) => DATA_TYPE_TO_P21[dt])
+        .filter(Boolean);
+
+      nextAnswers = {
+        ...currentSar.answers,
+        P21: {
+          questionId: 'P21',
+          value: mappedP21,
+          state: 'active',
+          updatedBy: currentPersona.name,
+          updatedAt: now,
+          history: currentSar.answers.P21?.history || [],
+        },
+      };
+
+      if (!currentSar.answers.P20?.value && mappedP21.length > 0) {
+        const inferredSensitivity = mappedP21.some((id) =>
+          ['pii', 'pci', 'secrets_keys'].includes(id)
+        )
+          ? 'sensitive'
+          : mappedP21.some((id) => ['financial', 'source_code_ip'].includes(id))
+          ? 'confidential'
+          : 'internal';
+        nextAnswers.P20 = {
+          questionId: 'P20',
+          value: inferredSensitivity,
+          state: 'active',
+          updatedBy: currentPersona.name,
+          updatedAt: now,
+          history: [],
+        };
+      }
+
+      const def = getPinnedDefinition(currentSar);
+      nextEvaluation = evaluateSAR(
+        nextAnswers,
+        currentSar.tables,
+        currentSar.manualCategories,
+        def
+      );
+    }
+
     const nextSar: SARRecord = {
       ...currentSar,
       basics: nextBasics,
+      answers: nextAnswers,
+      evaluation: nextEvaluation,
       updatedBy: currentPersona.name,
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
       lastActiveScreen: 'basics',
     };
     persistSessionSar(nextSar, undefined, true);
@@ -531,7 +630,9 @@ export default function App() {
     // Keep activeModuleCode valid if dynamic scope changes removed the selected module
     let nextActiveModuleCode = activeModuleCode;
     if (!activeModSet.has(activeModuleCode)) {
-      const firstActiveChecklist = nextEvaluation.activeModules.find((m) => m.code !== 'M0');
+      const firstActiveChecklist = nextEvaluation.activeModules.find(
+        (m) => m.code !== 'M0' && m.code !== 'M17'
+      );
       nextActiveModuleCode = firstActiveChecklist?.code || 'M1';
       setActiveModuleCode(nextActiveModuleCode);
     }
@@ -584,60 +685,6 @@ export default function App() {
     pushToast('Scope Change Reverted', 'Restored your previous response.', 'default');
   };
 
-  const handleUpdateManualCategories = (manual: {
-    added: string[];
-    removed: string[];
-    fullReviewRequested: boolean;
-    reason?: string;
-  }) => {
-    const currentSar = activeSarRef.current;
-    const def = getPinnedDefinition(currentSar);
-    const nextEval = evaluateSAR(currentSar.answers, currentSar.tables, manual, def);
-    const activeModSet = new Set(nextEval.activeModules.map((m) => m.code));
-    const visibleQSet = new Set(nextEval.visibleQuestionIds);
-    const qDefMap = new Map(def.questions.map((q) => [q.id, q]));
-
-    const nextAnswers: Record<string, AnswerEntry> = {};
-    for (const [qId, ans] of Object.entries(currentSar.answers)) {
-      const qDef = qDefMap.get(qId);
-      if (!qDef) {
-        nextAnswers[qId] = ans;
-        continue;
-      }
-      const shouldBeActive =
-        qDef.stage !== undefined
-          ? visibleQSet.has(qId)
-          : activeModSet.has(qDef.moduleId) && visibleQSet.has(qId);
-      const targetState = shouldBeActive ? 'active' : 'inactive';
-      nextAnswers[qId] = ans.state === targetState ? ans : { ...ans, state: targetState };
-    }
-
-    let nextActiveModuleCode = activeModuleCode;
-    if (!activeModSet.has(activeModuleCode)) {
-      const firstActiveChecklist = nextEval.activeModules.find((m) => m.code !== 'M0');
-      nextActiveModuleCode = firstActiveChecklist?.code || 'M1';
-      setActiveModuleCode(nextActiveModuleCode);
-    }
-
-    const nextSar: SARRecord = {
-      ...currentSar,
-      answers: nextAnswers,
-      manualCategories: manual,
-      evaluation: nextEval,
-      updatedBy: currentPersona.name,
-      updatedAt: new Date().toISOString(),
-      lastActiveModule: nextActiveModuleCode,
-    };
-    persistSessionSar(nextSar);
-    pushToast(
-      'Review Scope Updated',
-      manual.fullReviewRequested
-        ? 'Full Security Architecture Review (all checklist sections) enabled.'
-        : 'Manual category scope overrides applied.',
-      'default'
-    );
-  };
-
   const handleUpdateTables = (tables: RepeaterTablesData) => {
     const currentSar = activeSarRef.current;
     const def = getPinnedDefinition(currentSar);
@@ -650,54 +697,6 @@ export default function App() {
       updatedAt: new Date().toISOString(),
     };
     persistSessionSar(nextSar);
-  };
-
-  const handleUpdateAttachments = (attachments: AttachmentSlotState[]) => {
-    const currentSar = activeSarRef.current;
-    const nextSar: SARRecord = {
-      ...currentSar,
-      attachments,
-      updatedBy: currentPersona.name,
-      updatedAt: new Date().toISOString(),
-    };
-    persistSessionSar(nextSar);
-    pushToast(
-      'Supporting Document Updated',
-      'Document uploaded and verified.',
-      'success'
-    );
-  };
-
-  const handleDelegateModule = (
-    moduleCode: ModuleCode,
-    assigneeName: string,
-    assigneeEmail: string,
-    note: string
-  ) => {
-    const modDef = activeDefinition.modules.find((m) => m.code === moduleCode);
-    const nextDelegations = {
-      ...(activeSar.delegations || {}),
-      [moduleCode]: {
-        moduleCode,
-        assigneeName,
-        assigneeEmail,
-        assignedBy: currentPersona.name,
-        assignedAt: new Date().toISOString(),
-        note,
-        status: 'pending' as const,
-      },
-    };
-    const nextSar: SARRecord = {
-      ...activeSar,
-      delegations: nextDelegations,
-      updatedAt: new Date().toISOString(),
-    };
-    persistSessionSar(nextSar);
-    pushToast(
-      `${modDef?.shortTitle || 'Section'} Delegated`,
-      `Assigned to ${assigneeName} (${assigneeEmail}).`,
-      'success'
-    );
   };
 
   const handleOverrideContradiction = (warningId: string, justification: string) => {
@@ -795,8 +794,8 @@ export default function App() {
 
     persistSessionSar(lockedSar);
 
-    // Synchronously learn the submitted SAR pattern genome (strictly status === 'submitted')
-    const localIngestion = globalPatternLearningStore.ingestSubmittedSar(lockedSar, def);
+    // Synchronously learn the submitted SAR pattern in the background (strictly status === 'submitted')
+    globalPatternLearningStore.ingestSubmittedSar(lockedSar, def);
     fetch('/api/patterns/ingest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -806,8 +805,8 @@ export default function App() {
     });
 
     pushToast(
-      `${lockedSar.displayId} Submitted & Pattern Learned`,
-      `Locked with SHA-256 & indexed into Pattern Corpus (Genome ${localIngestion.genome?.genomeHash.slice(0, 8) || 'verified'}).`,
+      `${lockedSar.displayId} Submitted Successfully`,
+      `Your Security Architecture Review has been locked (SHA-256: ${sha256.slice(0, 12)}...) and is ready for PDF & Excel export.`,
       'success'
     );
   };
@@ -938,48 +937,44 @@ export default function App() {
               type="button"
               onClick={() => setLlmConfigOpen(true)}
               title={llmProviderLabel ?? 'Configure OpenAI LLM API Key (Session Memory Only)'}
-              className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-full text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer border ${
-                llmConfig
-                  ? 'border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                  : 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 text-amber-900 dark:text-amber-200 hover:bg-amber-100'
-              }`}
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-full text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800"
             >
               {llmConfig ? (
                 <>
-                  <Check className="w-3 h-3 text-emerald-600 shrink-0" />
+                  <Check className="w-3 h-3 text-zinc-900 dark:text-zinc-100 shrink-0" />
                   <span className="hidden xl:inline">{llmProviderLabel}</span>
                   <span className="xl:hidden">LLM</span>
                 </>
               ) : (
                 <>
-                  <Zap className="w-3 h-3 text-amber-600 shrink-0" />
+                  <Zap className="w-3 h-3 text-zinc-700 dark:text-zinc-300 shrink-0" />
                   <span className="hidden sm:inline">Configure LLM</span>
                   <span className="sm:hidden">LLM</span>
                 </>
               )}
             </button>
 
-            {/* Sample & Excel Button */}
+            {/* Load Example Button */}
             <button
               type="button"
               onClick={handleFillRandomSample}
-              title="Populate realistic random details across every step and open the 2-Sheet Excel Report preview"
+              title="Load a complete reference SAR example"
               className="hidden sm:inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-semibold text-zinc-900 dark:text-white bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 border border-zinc-300 dark:border-zinc-700 rounded-full transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Shuffle className="w-3.5 h-3.5" />
-              <span className="hidden xl:inline">Sample &amp; Excel</span>
-              <span className="xl:hidden">Sample</span>
+              <span className="hidden xl:inline">Load Example</span>
+              <span className="xl:hidden">Example</span>
             </button>
 
-            {/* Reset Blank Button — Always Visible */}
+            {/* Reset Form Button — Always Visible */}
             <button
               type="button"
               onClick={handleResetCurrentSession}
-              title="Clear temporary browser progress and start a fresh ServiceNow intake session"
+              title="Clear form and start a fresh blank SAR request"
               className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-semibold text-zinc-900 dark:text-zinc-100 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 border border-zinc-300 dark:border-zinc-700 rounded-full shadow-2xs transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>Reset Blank</span>
+              <span>Reset Form</span>
             </button>
 
             {/* Dark / Light Theme Toggle — Always Visible with High Contrast */}
@@ -988,10 +983,10 @@ export default function App() {
               aria-label="Toggle dark or light theme"
               onClick={() => setDarkMode((d) => !d)}
               title={darkMode ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
-              className="inline-flex items-center justify-center p-2 rounded-full border-2 border-zinc-300 dark:border-zinc-600 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-900 dark:text-amber-300 hover:scale-105 transition-all cursor-pointer shrink-0"
+              className="inline-flex items-center justify-center p-2 rounded-full border border-zinc-300 dark:border-zinc-700 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-900 dark:text-zinc-100 transition-all cursor-pointer shrink-0"
             >
               {darkMode ? (
-                <Sun className="w-4 h-4 text-amber-400" />
+                <Sun className="w-4 h-4 text-zinc-100" />
               ) : (
                 <Moon className="w-4 h-4 text-zinc-800" />
               )}
@@ -1038,11 +1033,7 @@ export default function App() {
                     setMobileMenuOpen(false);
                     setLlmConfigOpen(true);
                   }}
-                  className={`inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-full border cursor-pointer ${
-                    llmConfig
-                      ? 'border-zinc-300 dark:border-zinc-700 text-zinc-800 dark:text-zinc-200'
-                      : 'border-amber-300 bg-amber-50 text-amber-900'
-                  }`}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-full border border-zinc-300 dark:border-zinc-700 text-zinc-800 dark:text-zinc-200 cursor-pointer"
                 >
                   <Zap className="w-3 h-3" />
                   <span>{llmProviderLabel ?? 'Configure LLM'}</span>
@@ -1053,7 +1044,7 @@ export default function App() {
                   className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-zinc-900 dark:text-white bg-zinc-100 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-full cursor-pointer"
                 >
                   <Shuffle className="w-3 h-3" />
-                  <span>Sample &amp; Excel</span>
+                  <span>Load Example</span>
                 </button>
                 <button
                   type="button"
@@ -1061,7 +1052,7 @@ export default function App() {
                   className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-white bg-zinc-950 dark:bg-white dark:text-zinc-950 rounded-full cursor-pointer"
                 >
                   <RotateCcw className="w-3 h-3" />
-                  <span>Reset</span>
+                  <span>Reset Form</span>
                 </button>
               </div>
             </motion.div>
@@ -1072,6 +1063,7 @@ export default function App() {
       {/* INTERACTIVE CYBERSECURITY SCROLL TRACE RAIL (Moves 1:1 with page scroll on wide viewports) */}
       <CyberScrollTrace
         activeView={activeView}
+        stageKey={`${activeView}-${activePrelimStage}-${activeModuleCode}`}
         completionPercentage={activeSar.evaluation?.completionPercentage || 0}
       />
 
@@ -1086,28 +1078,28 @@ export default function App() {
         </div>
       </div>
 
-      {/* STRICTLY 1-ROW 4-PHASE INTAKE STEPPER DOCK (SAR Unique ID + 4 Phases in 1 Line) */}
-      <div className="max-w-5xl w-full mx-auto px-4 sm:px-6 pt-4 pb-1">
-        <div className="sar-glass-card rounded-full border border-zinc-200/90 dark:border-zinc-800 px-3 sm:px-4 py-2 flex flex-nowrap items-center justify-between gap-2 overflow-x-auto no-scrollbar text-xs">
+      {/* STRICTLY 1-ROW 5-PHASE INTAKE STEPPER DOCK (SAR Unique ID + 5 Phases in 1 Line) */}
+      <div className="max-w-6xl w-full mx-auto px-4 sm:px-6 xl:pl-14 pt-3.5 pb-1">
+        <div className="sar-glass-card rounded-full border border-zinc-200/90 dark:border-zinc-800 px-2.5 sm:px-3.5 py-1.5 flex flex-nowrap items-center justify-between gap-1.5 overflow-x-auto no-scrollbar text-[11px] sm:text-xs">
           {/* SAR Unique ID on the same single line */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <span className="font-mono text-[11px] font-bold px-2.5 py-1 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 tabular-nums whitespace-nowrap shrink-0">
               {activeSar.displayId}
             </span>
             <span
               aria-hidden="true"
-              className="h-4 w-px bg-zinc-200 dark:bg-zinc-800 shrink-0"
+              className="h-3.5 w-px bg-zinc-200 dark:bg-zinc-800 shrink-0"
             />
           </div>
 
-          {/* 4-Step Tamperproof Intake Stepper on the same single line */}
-          <div className="flex flex-nowrap items-center gap-1 sm:gap-1.5 shrink-0">
+          {/* 5-Step Tamperproof Intake Stepper on the same single line */}
+          <div className="flex flex-nowrap items-center gap-0.5 sm:gap-1 shrink-0">
             <button
               type="button"
               onClick={() => {
                 setActiveView('basics');
               }}
-              className={`sar-glass-step-btn inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-full border transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`sar-glass-step-btn inline-flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-full border transition-all whitespace-nowrap shrink-0 cursor-pointer ${
                 activeView === 'basics'
                   ? 'sar-active border-zinc-950 dark:border-white bg-zinc-950 text-white dark:bg-white dark:text-zinc-950 font-semibold shadow-2xs'
                   : 'border-transparent text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100/80 dark:hover:bg-zinc-800/80'
@@ -1118,7 +1110,7 @@ export default function App() {
                   className={`w-3 h-3 shrink-0 ${
                     activeView === 'basics'
                       ? 'text-white dark:text-zinc-950'
-                      : 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-zinc-900 dark:text-zinc-100'
                   }`}
                 />
               )}
@@ -1126,7 +1118,7 @@ export default function App() {
               <span className="sm:hidden">1. Basics</span>
             </button>
 
-            <span className="text-zinc-300 dark:text-zinc-700 shrink-0">→</span>
+            <span className="text-zinc-300 dark:text-zinc-700 text-[10px] shrink-0">→</span>
 
             <button
               type="button"
@@ -1148,7 +1140,7 @@ export default function App() {
                 );
                 setActiveView('preliminary');
               }}
-              className={`sar-glass-step-btn inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-full border transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`sar-glass-step-btn inline-flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-full border transition-all whitespace-nowrap shrink-0 cursor-pointer ${
                 activeView === 'preliminary'
                   ? 'sar-active border-zinc-950 dark:border-white bg-zinc-950 text-white dark:bg-white dark:text-zinc-950 font-semibold shadow-2xs'
                   : activeFlowGates.canAccessPreliminary
@@ -1163,15 +1155,15 @@ export default function App() {
                   className={`w-3 h-3 shrink-0 ${
                     activeView === 'preliminary'
                       ? 'text-white dark:text-zinc-950'
-                      : 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-zinc-900 dark:text-zinc-100'
                   }`}
                 />
               ) : null}
-              <span className="hidden md:inline">2. Preliminary Discovery</span>
-              <span className="md:hidden">2. Preliminary</span>
+              <span className="hidden lg:inline">2. Preliminary Discovery</span>
+              <span className="lg:hidden">2. Preliminary</span>
             </button>
 
-            <span className="text-zinc-300 dark:text-zinc-700 shrink-0">→</span>
+            <span className="text-zinc-300 dark:text-zinc-700 text-[10px] shrink-0">→</span>
 
             <button
               type="button"
@@ -1197,7 +1189,7 @@ export default function App() {
                 }
                 setActiveView('modules');
               }}
-              className={`sar-glass-step-btn inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-full border transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`sar-glass-step-btn inline-flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-full border transition-all whitespace-nowrap shrink-0 cursor-pointer ${
                 activeView === 'modules'
                   ? 'sar-active border-zinc-950 dark:border-white bg-zinc-950 text-white dark:bg-white dark:text-zinc-950 font-semibold shadow-2xs'
                   : activeFlowGates.canAccessModules
@@ -1212,24 +1204,33 @@ export default function App() {
                   className={`w-3 h-3 shrink-0 ${
                     activeView === 'modules'
                       ? 'text-white dark:text-zinc-950'
-                      : 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-zinc-900 dark:text-zinc-100'
                   }`}
                 />
               ) : null}
-              <span className="hidden md:inline">
-                3. Checklist ({activeSar.evaluation?.activeModules.filter((m) => m.code !== 'M0').length || 0} Sections)
+              <span className="hidden xl:inline">
+                3. Checklist (
+                {activeSar.evaluation?.activeModules.filter(
+                  (m) => m.code !== 'M0' && m.code !== 'M17'
+                ).length || 0}{' '}
+                Sections)
               </span>
-              <span className="md:hidden">
-                3. Checklist
+              <span className="hidden md:inline xl:hidden">
+                3. Checklist (
+                {activeSar.evaluation?.activeModules.filter(
+                  (m) => m.code !== 'M0' && m.code !== 'M17'
+                ).length || 0}
+                )
               </span>
+              <span className="md:hidden">3. Checklist</span>
             </button>
 
-            <span className="text-zinc-300 dark:text-zinc-700 shrink-0">→</span>
+            <span className="text-zinc-300 dark:text-zinc-700 text-[10px] shrink-0">→</span>
 
             <button
               type="button"
               onClick={() => {
-                if (!activeFlowGates.canAccessReview) {
+                if (!activeFlowGates.canAccessModules) {
                   if (!activeFlowGates.canAccessPreliminary) {
                     pushToast(
                       'Phase 4 Locked',
@@ -1237,9 +1238,58 @@ export default function App() {
                       'warning'
                     );
                     setActiveView('basics');
-                  } else if (!activeFlowGates.canAccessModules) {
+                  } else {
                     pushToast(
                       'Phase 4 Locked',
+                      `Complete Preliminary Discovery (${activeFlowGates.missingPreliminaryCodes.length} remaining) to view Architecture Flow.`,
+                      'warning'
+                    );
+                    setActivePrelimStage(activeFlowGates.maxUnlockedStage);
+                    setActiveView('preliminary');
+                  }
+                  return;
+                }
+                setActiveView('flow');
+              }}
+              className={`sar-glass-step-btn inline-flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-full border transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+                activeView === 'flow'
+                  ? 'sar-active border-zinc-950 dark:border-white bg-zinc-950 text-white dark:bg-white dark:text-zinc-950 font-semibold shadow-2xs'
+                  : activeFlowGates.canAccessModules
+                  ? 'border-transparent text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100/80 dark:hover:bg-zinc-800/80'
+                  : 'border-transparent text-zinc-400 dark:text-zinc-600'
+              }`}
+            >
+              {!activeFlowGates.canAccessModules ? (
+                <Lock className="w-3 h-3 shrink-0" />
+              ) : activeFlowGates.preliminaryComplete ? (
+                <Check
+                  className={`w-3 h-3 shrink-0 ${
+                    activeView === 'flow'
+                      ? 'text-white dark:text-zinc-950'
+                      : 'text-zinc-900 dark:text-zinc-100'
+                  }`}
+                />
+              ) : null}
+              <span className="hidden lg:inline">4. Architecture Flow</span>
+              <span className="lg:hidden">4. Flow</span>
+            </button>
+
+            <span className="text-zinc-300 dark:text-zinc-700 text-[10px] shrink-0">→</span>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (!activeFlowGates.canAccessReview) {
+                  if (!activeFlowGates.canAccessPreliminary) {
+                    pushToast(
+                      'Phase 5 Locked',
+                      'Complete Phase 1 Request Basics first.',
+                      'warning'
+                    );
+                    setActiveView('basics');
+                  } else if (!activeFlowGates.canAccessModules) {
+                    pushToast(
+                      'Phase 5 Locked',
                       `Complete Preliminary Discovery (${activeFlowGates.missingPreliminaryCodes.length} remaining) first.`,
                       'warning'
                     );
@@ -1247,7 +1297,7 @@ export default function App() {
                     setActiveView('preliminary');
                   } else {
                     pushToast(
-                      'Phase 4 Locked',
+                      'Phase 5 Locked',
                       `Answer remaining ${activeFlowGates.missingDetailedQuestions.length} checklist questions before Review & Submit.`,
                       'warning'
                     );
@@ -1260,7 +1310,7 @@ export default function App() {
                 }
                 setActiveView('review');
               }}
-              className={`sar-glass-step-btn inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1 rounded-full border transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`sar-glass-step-btn inline-flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded-full border transition-all whitespace-nowrap shrink-0 cursor-pointer ${
                 activeView === 'review'
                   ? 'sar-active border-zinc-950 dark:border-white bg-zinc-950 text-white dark:bg-white dark:text-zinc-950 font-semibold shadow-2xs'
                   : activeFlowGates.canAccessReview
@@ -1275,12 +1325,12 @@ export default function App() {
                   className={`w-3 h-3 shrink-0 ${
                     activeView === 'review'
                       ? 'text-white dark:text-zinc-950'
-                      : 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-zinc-900 dark:text-zinc-100'
                   }`}
                 />
               ) : null}
               <span>
-                4. {activeSar.status === 'submitted' ? 'Submitted Record' : 'Review & Submit'}
+                5. {activeSar.status === 'submitted' ? 'Submitted' : 'Review & Submit'}
               </span>
             </button>
           </div>
@@ -1289,21 +1339,22 @@ export default function App() {
 
       {/* MAIN VIEWPORT WITH SUBTLE COMPOSITOR ANIMATION */}
       <div className="flex-1">
-        <AnimatePresence mode="wait">
+        <AnimatePresence mode="wait" onExitComplete={scrollToPageTop}>
           <motion.div
             key={activeView}
             initial={{ opacity: 0, y: 5 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -3 }}
             transition={{ duration: 0.12, ease: [0.2, 0, 0, 1] }}
+            onAnimationStart={scrollToPageTop}
             style={{ willChange: 'opacity, transform' }}
           >
             {activeView === 'basics' && (
               <RequestBasicsView
                 sar={activeSar}
-                allSars={[activeSar]}
                 onUpdateBasics={handleUpdateBasics}
                 onContinueToPreliminary={() => {
+                  scrollToPageTop();
                   setActivePrelimStage(1);
                   setActiveView('preliminary');
                   pushToast(
@@ -1312,7 +1363,6 @@ export default function App() {
                     'success'
                   );
                 }}
-                onOpenExistingSAR={() => {}}
               />
             )}
 
@@ -1321,10 +1371,13 @@ export default function App() {
                 sar={activeSar}
                 definition={getPinnedDefinition(activeSar)}
                 activeStage={activePrelimStage}
-                onChangeStage={(st) => setActivePrelimStage(st)}
+                onChangeStage={(st) => {
+                  scrollToPageTop();
+                  setActivePrelimStage(st);
+                }}
                 onAnswerQuestion={handleAnswerQuestion}
-                onUpdateManualCategories={handleUpdateManualCategories}
                 onOpenDetailedModule={(mCode) => {
+                  scrollToPageTop();
                   if (mCode === 'M0') {
                     setActiveView('basics');
                   } else {
@@ -1337,7 +1390,6 @@ export default function App() {
                     );
                   }
                 }}
-                onDelegateModule={handleDelegateModule}
                 scopeChangeNotice={scopeChangeNotice}
                 onUndoScopeChange={handleUndoScopeChange}
                 onDismissScopeNotice={() => setScopeChangeNotice(null)}
@@ -1348,9 +1400,9 @@ export default function App() {
               <DetailedModulesView
                 sar={activeSar}
                 definition={getPinnedDefinition(activeSar)}
-                currentPersona={currentPersona}
                 activeModule={activeModuleCode}
                 onSelectModule={(mCode) => {
+                  scrollToPageTop();
                   if (mCode === 'M0') {
                     setActiveView('basics');
                   } else {
@@ -1359,18 +1411,51 @@ export default function App() {
                 }}
                 onAnswerQuestion={handleAnswerQuestion}
                 onUpdateTables={handleUpdateTables}
-                onUpdateAttachments={handleUpdateAttachments}
                 onBackToPreliminary={() => {
+                  scrollToPageTop();
                   setActivePrelimStage(4);
                   setActiveView('preliminary');
                 }}
                 onProceedToReview={() => {
-                  setActiveView('review');
+                  scrollToPageTop();
+                  setActiveView('flow');
                   pushToast(
-                    'Phase 4 Review & Submit Ready',
-                    'All mandatory checklist questions are complete.',
+                    'Architecture Flow Ready',
+                    'Synthesized 1-view WHAT · WHO · HOW · WHERE flow from your Preliminary Checklist.',
                     'success'
                   );
+                }}
+              />
+            )}
+
+            {activeView === 'flow' && (
+              <ArchitectureFlowView
+                sar={activeSar}
+                definition={getPinnedDefinition(activeSar)}
+                onJumpToPreliminaryStage={(stage) => {
+                  scrollToPageTop();
+                  setActivePrelimStage(stage);
+                  setActiveView('preliminary');
+                }}
+                onBackToModules={() => {
+                  scrollToPageTop();
+                  setActiveView('modules');
+                }}
+                onProceedToReview={() => {
+                  scrollToPageTop();
+                  if (!activeFlowGates.canAccessReview) {
+                    pushToast(
+                      'Phase 5 Locked',
+                      `Answer remaining ${activeFlowGates.missingDetailedQuestions.length} checklist questions before Review & Submit.`,
+                      'warning'
+                    );
+                    if (activeFlowGates.missingDetailedQuestions[0]) {
+                      setActiveModuleCode(activeFlowGates.missingDetailedQuestions[0].moduleId);
+                    }
+                    setActiveView('modules');
+                    return;
+                  }
+                  setActiveView('review');
                 }}
               />
             )}
@@ -1379,17 +1464,25 @@ export default function App() {
               <ReviewAndSubmitView
                 sar={activeSar}
                 definition={getPinnedDefinition(activeSar)}
-                currentPersona={currentPersona}
                 llmConfig={llmConfig}
                 onOpenLlmConfig={() => setLlmConfigOpen(true)}
                 onSaveAiSummary={handleSaveAiSummary}
                 onNotify={pushToast}
-                onJumpToBasics={() => setActiveView('basics')}
+                onBackToFlow={() => {
+                  scrollToPageTop();
+                  setActiveView('flow');
+                }}
+                onJumpToBasics={() => {
+                  scrollToPageTop();
+                  setActiveView('basics');
+                }}
                 onJumpToPreliminary={(stage) => {
+                  scrollToPageTop();
                   setActivePrelimStage(stage);
                   setActiveView('preliminary');
                 }}
                 onJumpToModule={(mCode) => {
+                  scrollToPageTop();
                   setActiveModuleCode(mCode);
                   setActiveView('modules');
                 }}
@@ -1398,7 +1491,6 @@ export default function App() {
                 onReopenAsRevision={handleReopenAsRevision}
                 onExportPDF={handleExportPDF}
                 onExportExcel={handleExportExcel}
-                onFillRandomSample={handleFillRandomSample}
               />
             )}
           </motion.div>
@@ -1418,7 +1510,7 @@ export default function App() {
       {/* SINGLE-LINE FOOTER */}
       <footer className="border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-6 py-4 mt-12">
         <div className="max-w-[1360px] mx-auto text-center text-xs font-medium text-zinc-600 dark:text-zinc-400">
-          Built by Security Engineer&apos;s of ISG
+          ISG&apos;s Security Architecture Checklist
         </div>
       </footer>
 
@@ -1532,7 +1624,11 @@ export default function App() {
                       action: () => handleNavigatePhase(activeSar, 'modules'),
                     },
                     {
-                      label: 'Jump to Phase 4: Review & Submit Screen',
+                      label: 'Jump to Phase 4: Architecture Flow (WHAT · WHO · HOW · WHERE)',
+                      action: () => handleNavigatePhase(activeSar, 'flow'),
+                    },
+                    {
+                      label: 'Jump to Phase 5: Review & Submit Screen',
                       action: () => handleNavigatePhase(activeSar, 'review'),
                     },
                     {

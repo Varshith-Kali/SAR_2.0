@@ -1,6 +1,14 @@
 import { CMDB_APPLICATIONS, DEFAULT_DEFINITION_VERSION } from './definitions';
 import { redactSensitivePatterns } from './rulesEngine';
 import { DefinitionVersion, QuestionDefinition, SARRecord } from './types';
+import {
+  THREAD_DIMENSIONS,
+  CONNECTED_APP_FLOW_FIELDS,
+  APPLICATION_HOSTING_FIELDS,
+  resolveActiveUserThreads,
+  resolveConnectedAppFlows,
+  resolveApplicationHostingThreads,
+} from './checklistChains';
 
 // Escape cell content that starts with =, +, -, @, |, %, tab, CR/LF to prevent CSV/Excel formula injection
 export function sanitizeSpreadsheetCell(value: unknown): string {
@@ -47,12 +55,23 @@ export function formatAnswerForDisplay(q: QuestionDefinition, rawVal: unknown): 
   if (!hasRequesterResponse(rawVal)) return 'Unanswered';
   if (rawVal === 'not_sure') return "I don't know yet (Open Item)";
   if (rawVal === 'not_applicable') return 'Not applicable';
+  if (rawVal === 'no_exception_compensating') {
+    return 'No — Exception / Alternative Compensating Control';
+  }
   const vals = Array.isArray(rawVal) ? rawVal.map(String) : [String(rawVal)];
   if (q.options && q.options.length > 0) {
     return vals
       .map((v) => {
         const match = q.options?.find((o) => o.id === v);
-        return match ? match.label : v;
+        if (!match) return v;
+        if (
+          q.moduleId !== 'M0' &&
+          q.answerType === 'yes_no' &&
+          !/^(yes|no)\b/i.test(match.label)
+        ) {
+          return `Yes — ${match.label}`;
+        }
+        return match.label;
       })
       .join(' | ');
   }
@@ -60,11 +79,8 @@ export function formatAnswerForDisplay(q: QuestionDefinition, rawVal: unknown): 
 }
 
 export function formatAvailableOptionsForDisplay(q: QuestionDefinition): string {
-  if (q.answerType === 'long_text') {
-    return 'Free-Text Input';
-  }
   if (!q.options || q.options.length === 0) {
-    return 'Free-Text Input';
+    return 'Yes | No';
   }
   return q.options
     .map((opt, idx) => `${idx + 1}. ${opt.label}`)
@@ -73,14 +89,16 @@ export function formatAvailableOptionsForDisplay(q: QuestionDefinition): string 
 
 export function formatQuestionTypeLabel(q: QuestionDefinition): string {
   switch (q.answerType) {
+    case 'yes_no':
+      return q.moduleId === 'M0' ? 'Yes / No' : 'Yes / No + Chained Follow-Up';
+    case 'yes_no_not_sure':
+      return 'Yes / No / Not Sure';
     case 'single_select':
       return 'Single-Select Option';
     case 'multi_select':
       return 'Multi-Select Options';
-    case 'long_text':
-      return 'Free-Text Input';
     default:
-      return 'Structured Input';
+      return 'Structured Selection';
   }
 }
 
@@ -118,6 +136,151 @@ const CMDB_APP_BY_ID: ReadonlyMap<string, string> = new Map(
   CMDB_APPLICATIONS.map((a) => [a.id, a.canonicalName])
 );
 
+const HUMAN_TOKEN_LABELS: Record<string, string> = {
+  // User types
+  bank_employees: 'Internal Users (Bank Employees)',
+  partner_vendor_staff: 'External Partner / Vendor Staff',
+  customers: 'Retail Customers',
+  corporates_bc: 'Corporates / Business Correspondents',
+  anonymous_public: 'Anonymous / Public Visitors',
+  vip_executives: 'Executive / Board Members',
+  privileged_admins: 'Privileged Admins / DBAs',
+  none_headless: 'Headless / System-to-System Only',
+  // Platforms
+  web_browser: 'Web Browser (HTTPS)',
+  mobile_app: 'Mobile App (iOS / Android)',
+  desktop_thick_client: 'Desktop Client',
+  cli: 'CLI / SSH',
+  cli_ssh: 'CLI / SSH',
+  vdi_citrix: 'VDI / Citrix Session',
+  branch_pos_terminal: 'Branch / POS Terminal',
+  // Access scopes
+  read_only: 'Read-Only Inquiry',
+  maker: 'Maker (Transaction Entry)',
+  maker_transactions: 'Maker (Transaction Entry)',
+  checker: 'Checker (Approval & Sign-Off)',
+  checker_approvals: 'Checker (Approval & Sign-Off)',
+  partner_scoped: 'Scoped Partner / Vendor Access',
+  vendor_scoped_ops: 'Scoped Partner / Vendor Access',
+  privileged_admin: 'Privileged System / Security Admin',
+  privileged_admin_config: 'Privileged System / Security Admin',
+  // Network paths
+  corp_lan: 'Corporate LAN',
+  corporate_network: 'Corporate LAN',
+  corp_vpn: 'Corporate VPN + MFA',
+  vpn: 'Corporate VPN + MFA',
+  public_internet: 'Public Internet (via WAF & DMZ)',
+  internet: 'Public Internet (via WAF & DMZ)',
+  partner_vpn: 'Partner Site-to-Site VPN',
+  partner_network: 'Partner Site-to-Site VPN',
+  pam_bastion: 'CyberArk PAM Jump Host',
+  isolated_subnet: 'Isolated Admin Jump Subnet',
+  // Auth mechanisms
+  bank_sso_oidc: 'Bank Enterprise SSO (OIDC / SAML)',
+  enterprise_oidc_saml: 'Bank Enterprise SSO (OIDC / SAML)',
+  partner_sso: 'Partner Federated SSO',
+  partner_federated_sso: 'Partner Federated SSO',
+  customer_ciam: 'Customer CIAM (OAuth 2.0 + PKCE)',
+  customer_ciam_pkce: 'Customer CIAM (OAuth 2.0 + PKCE)',
+  pam_mfa: 'CyberArk PAM + Hardware MFA',
+  cyberark_pam_bastion: 'CyberArk PAM + Hardware MFA',
+  local_breakglass: 'Local Vaulted Break-Glass Account',
+  // Integration directions & protocols
+  inbound: 'Inbound to Primary App',
+  outbound: 'Outbound from Primary App',
+  bidirectional: 'Bidirectional (Two-Way)',
+  rest_api: 'REST API (HTTPS)',
+  webhooks: 'Webhooks / Callbacks',
+  queues_streams: 'Message Queue / Kafka',
+  file_transfer: 'Managed File Transfer (SFTP)',
+  db_connection: 'Direct Database Link',
+  email_smtp: 'Email / SMTP Relay',
+  // Hosting & zones
+  bank_dc: 'On-Premises Data Center (Bank DC)',
+  bank_aws: 'Private Cloud (AWS)',
+  other_cloud_paas: 'Other Cloud / PaaS (Azure, GCP, SFDC)',
+  vendor_saas: 'Third-Party Vendor SaaS Tenant',
+  external_vendor: 'External Partner / Vendor Environment',
+  hybrid: 'Hybrid (On-Premises DC + Cloud)',
+  primary_changed: 'Primary Solution Under SAR',
+  connected_internal: 'Connected Internal Bank System',
+  external_partner: 'External Partner / Counterparty',
+  app_db_internal: 'Internal App / Database Zone',
+  dmz_edge: 'DMZ / Edge Reverse-Proxy Zone',
+  cloud_vpc_private: 'Private Cloud VPC Subnet',
+  vendor_tenant: 'External Vendor Hosted Tenant',
+  // Encryption
+  mtls: 'Mutual TLS (mTLS 1.2+)',
+  tls_1_2_plus: 'HTTPS / TLS 1.2+',
+  ssh_pgp: 'SFTP SSH Key + PGP Encryption',
+  yes: 'Encrypted (TLS 1.2+ / mTLS)',
+  no: 'Unencrypted / Plaintext',
+};
+
+function humanizeToken(token: unknown): string {
+  if (token === null || token === undefined) return '';
+  const raw = String(token).trim();
+  if (!raw) return '';
+  if (HUMAN_TOKEN_LABELS[raw]) return HUMAN_TOKEN_LABELS[raw];
+  for (const dim of THREAD_DIMENSIONS) {
+    const found = dim.options.find((o) => o.id === raw);
+    if (found) return found.shortLabel;
+  }
+  for (const field of CONNECTED_APP_FLOW_FIELDS) {
+    const found = field.options.find((o) => o.id === raw);
+    if (found) return found.shortLabel;
+  }
+  for (const field of APPLICATION_HOSTING_FIELDS) {
+    const found = field.options.find((o) => o.id === raw);
+    if (found) return found.shortLabel;
+  }
+  return raw
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+const CANONICAL_STAGE_ORDER: Record<string, { stageNumber: number; stageLabel: string; order: number }> = {
+  P1: { stageNumber: 1, stageLabel: 'Stage 1 (WHAT): Scope, Data, Infrastructure & AI', order: 1 },
+  P2: { stageNumber: 1, stageLabel: 'Stage 1 (WHAT): Scope, Data, Infrastructure & AI', order: 2 },
+  P3: { stageNumber: 1, stageLabel: 'Stage 1 (WHAT): Scope, Data, Infrastructure & AI', order: 3 },
+  P4: { stageNumber: 1, stageLabel: 'Stage 1 (WHAT): Scope, Data, Infrastructure & AI', order: 4 },
+  P19: { stageNumber: 1, stageLabel: 'Stage 1 (WHAT): Scope, Data, Infrastructure & AI', order: 5 },
+  P20: { stageNumber: 1, stageLabel: 'Stage 1 (WHAT): Scope, Data, Infrastructure & AI', order: 6 },
+  P21: { stageNumber: 1, stageLabel: 'Stage 1 (WHAT): Scope, Data, Infrastructure & AI', order: 7 },
+  P22: { stageNumber: 1, stageLabel: 'Stage 1 (WHAT): Scope, Data, Infrastructure & AI', order: 8 },
+  P23: { stageNumber: 1, stageLabel: 'Stage 1 (WHAT): Scope, Data, Infrastructure & AI', order: 9 },
+  P25: { stageNumber: 1, stageLabel: 'Stage 1 (WHAT): Scope, Data, Infrastructure & AI', order: 10 },
+  P26: { stageNumber: 1, stageLabel: 'Stage 1 (WHAT): Scope, Data, Infrastructure & AI', order: 11 },
+  P27: { stageNumber: 1, stageLabel: 'Stage 1 (WHAT): Scope, Data, Infrastructure & AI', order: 12 },
+  P28: { stageNumber: 1, stageLabel: 'Stage 1 (WHAT): Scope, Data, Infrastructure & AI', order: 13 },
+  P30: { stageNumber: 1, stageLabel: 'Stage 1 (WHAT): Scope, Data, Infrastructure & AI', order: 14 },
+  P7: { stageNumber: 2, stageLabel: 'Stage 2 (WHO): Users, Platforms & Identity', order: 15 },
+  P8: { stageNumber: 2, stageLabel: 'Stage 2 (WHO): Users, Platforms & Identity', order: 16 },
+  P12: { stageNumber: 2, stageLabel: 'Stage 2 (WHO): Users, Platforms & Identity', order: 17 },
+  P29: { stageNumber: 2, stageLabel: 'Stage 2 (WHO): Users, Platforms & Identity', order: 18 },
+  P11: { stageNumber: 2, stageLabel: 'Stage 2 (WHO): Users, Platforms & Identity', order: 19 },
+  P9: { stageNumber: 3, stageLabel: 'Stage 3 (HOW): Channels, Protocols & Connectivity', order: 20 },
+  P13: { stageNumber: 3, stageLabel: 'Stage 3 (HOW): Channels, Protocols & Connectivity', order: 21 },
+  P14: { stageNumber: 3, stageLabel: 'Stage 3 (HOW): Channels, Protocols & Connectivity', order: 22 },
+  P15: { stageNumber: 3, stageLabel: 'Stage 3 (HOW): Channels, Protocols & Connectivity', order: 23 },
+  P16: { stageNumber: 3, stageLabel: 'Stage 3 (HOW): Channels, Protocols & Connectivity', order: 24 },
+  P17: { stageNumber: 3, stageLabel: 'Stage 3 (HOW): Channels, Protocols & Connectivity', order: 25 },
+  P18: { stageNumber: 3, stageLabel: 'Stage 3 (HOW): Channels, Protocols & Connectivity', order: 26 },
+  P5: { stageNumber: 4, stageLabel: 'Stage 4 (WHERE): Hosting, Environments & Network', order: 27 },
+  P6: { stageNumber: 4, stageLabel: 'Stage 4 (WHERE): Hosting, Environments & Network', order: 28 },
+  P10: { stageNumber: 4, stageLabel: 'Stage 4 (WHERE): Hosting, Environments & Network', order: 29 },
+  P24: { stageNumber: 4, stageLabel: 'Stage 4 (WHERE): Hosting, Environments & Network', order: 30 },
+};
+
+function cleanModuleTitle(rawTitle: string): string {
+  return rawTitle.replace(/^Module\s+\d+\s*[—–-]\s*/i, '').trim();
+}
+
+function extractNumericOrder(codeOrId: string): number {
+  const match = codeOrId.match(/(\d+)/);
+  return match ? parseInt(match[1], 10) : 99;
+}
+
 export function buildTwoSheetWorkbookData(
   sar: SARRecord,
   definition: DefinitionVersion = DEFAULT_DEFINITION_VERSION
@@ -128,6 +291,8 @@ export function buildTwoSheetWorkbookData(
   const connectedApps = sar.basics.connectedAppIds
     .map((id) => CMDB_APP_BY_ID.get(id) || id)
     .concat(sar.basics.customConnectedApps);
+
+  const primaryApp = (sar.basics.projectName || '').trim();
 
   const rawMetadataRows: { field: string; value: string; category: string }[] = [
     { category: 'Record Identity', field: 'SAR Tracking ID', value: sar.displayId },
@@ -143,7 +308,7 @@ export function buildTwoSheetWorkbookData(
     },
     {
       category: 'Project Context',
-      field: 'Project / Initiative Name',
+      field: 'Project / Request Name (Primary Solution)',
       value: sar.basics.projectName || '',
     },
     {
@@ -157,18 +322,18 @@ export function buildTwoSheetWorkbookData(
       value: sar.basics.targetGoLiveDate || '',
     },
     {
-      category: 'Project Context',
-      field: 'Connected CMDB Applications',
+      category: 'Architecture Topology',
+      field: 'Connected / Integrated Applications',
       value: connectedApps.join(' | '),
     },
     {
-      category: 'Project Context',
-      field: 'Preliminary Data Classifications',
+      category: 'Data Classification',
+      field: 'Preliminary Data Types Involved',
       value: sar.basics.preliminaryDataTypes.join(' | '),
     },
     {
-      category: 'Architecture Scope',
-      field: 'Business Requirement & Scope',
+      category: 'Business Context',
+      field: 'Business Requirement & Purpose',
       value: sar.basics.businessRequirement || '',
     },
   ];
@@ -179,10 +344,108 @@ export function buildTwoSheetWorkbookData(
   const visibleIdSet = evalRes?.visibleQuestionIds
     ? new Set(evalRes.visibleQuestionIds)
     : null;
-  const modTitleByCode = new Map(definition.modules.map((m) => [m.code, m.title]));
+  const modTitleByCode = new Map(
+    definition.modules.map((m) => [m.code, cleanModuleTitle(m.title)])
+  );
 
-  // Sheet 1: Preliminary Questions (P1 to P30) — ONLY requester-responded visible questions
-  const prelimQs = definition.questions.filter((q) => q.stage !== undefined);
+  // Format human-readable breakdown for P8 (User Threads), P13 (Connected Systems), and P5 (Hosting)
+  const summarizePreliminarySubBreakdown = (qId: string): string => {
+    if (qId === 'P8') {
+      const threadsVal =
+        sar.answers.P8_THREADS?.value || sar.answers.P_USER_THREADS?.value;
+      if (threadsVal && typeof threadsVal === 'object' && !Array.isArray(threadsVal)) {
+        const entries = Object.entries(threadsVal as Record<string, Record<string, string>>);
+        if (entries.length > 0) {
+          const summary = entries
+            .map(
+              ([uType, cfg]) =>
+                `${humanizeToken(uType)}: ${humanizeToken(cfg.platform || 'web_browser')} · ${humanizeToken(cfg.accessScope || 'read_only')} · ${humanizeToken(cfg.networkHow || cfg.networkMedium || 'corp_lan')} · ${humanizeToken(cfg.authMechanism || cfg.authMethod || 'bank_sso_oidc')}`
+            )
+            .join(' | ');
+          return ` — User Access Threads: ${summary}`;
+        }
+      }
+      const { activeUserTypes, matrix } = resolveActiveUserThreads(sar.answers);
+      if (activeUserTypes.length > 0) {
+        const summary = activeUserTypes
+          .map((u) => {
+            const cfg = matrix[u.userTypeId] || u.defaultValues;
+            return `${u.shortLabel}: ${humanizeToken(cfg.platform)} · ${humanizeToken(cfg.accessScope)} · ${humanizeToken(cfg.networkHow)} · ${humanizeToken(cfg.authMechanism)}`;
+          })
+          .join(' | ');
+        return ` — User Access Threads: ${summary}`;
+      }
+    }
+    if (qId === 'P13') {
+      const flowsVal = sar.answers.P13_APP_FLOWS?.value;
+      if (flowsVal && typeof flowsVal === 'object' && !Array.isArray(flowsVal)) {
+        const entries = Object.entries(flowsVal as Record<string, Record<string, string>>);
+        if (entries.length > 0) {
+          const summary = entries
+            .map(
+              ([appKey, cfg]) =>
+                `${appKey}: ${humanizeToken(cfg.direction || 'bidirectional')} via ${humanizeToken(cfg.protocol || cfg.channel || 'rest_api')} (${humanizeToken(cfg.hostingTarget || cfg.networkZone || 'bank_dc')}, ${humanizeToken(cfg.encrypted || 'mtls')})`
+            )
+            .join(' | ');
+          return ` — Connected Systems: ${summary}`;
+        }
+      }
+      const resolvedFlows = resolveConnectedAppFlows(
+        primaryApp || 'Primary Application',
+        connectedApps,
+        sar.answers
+      );
+      if (resolvedFlows.length > 0) {
+        const summary = resolvedFlows
+          .map(
+            (f) =>
+              `${f.appLabel}: ${humanizeToken(f.direction)} via ${humanizeToken(f.protocol)} (${humanizeToken(f.hostingTarget)}, ${humanizeToken(f.encrypted)})`
+          )
+          .join(' | ');
+        return ` — Connected Systems: ${summary}`;
+      }
+    }
+    if (qId === 'P5') {
+      const hostVal = sar.answers.P5_APP_HOSTING?.value;
+      if (hostVal && typeof hostVal === 'object' && !Array.isArray(hostVal)) {
+        const entries = Object.entries(hostVal as Record<string, Record<string, string>>);
+        if (entries.length > 0) {
+          const summary = entries
+            .map(
+              ([appKey, cfg]) =>
+                `${appKey}: ${humanizeToken(cfg.platform || cfg.hostingPlatform || 'bank_aws')} (${humanizeToken(cfg.role || 'primary_changed')}, ${humanizeToken(cfg.zone || cfg.networkZone || 'app_db_internal')})`
+            )
+            .join(' | ');
+          return ` — Per-System Hosting: ${summary}`;
+        }
+      }
+      const resolvedHost = resolveApplicationHostingThreads(
+        primaryApp || 'Primary Application',
+        connectedApps,
+        sar.answers
+      );
+      if (resolvedHost.length > 0) {
+        const summary = resolvedHost
+          .map(
+            (h) =>
+              `${h.unitLabel}: ${humanizeToken(h.platform)} (${humanizeToken(h.role)}, ${humanizeToken(h.zone)})`
+          )
+          .join(' | ');
+        return ` — Per-System Hosting: ${summary}`;
+      }
+    }
+    return '';
+  };
+
+  // Sheet 1: Preliminary Questions (P1 to P30) — ONLY requester-responded visible questions, ordered strictly by Stage 1..4 (WHAT -> WHO -> HOW -> WHERE)
+  const prelimQs = definition.questions
+    .filter((q) => q.stage !== undefined)
+    .sort((a, b) => {
+      const ordA = CANONICAL_STAGE_ORDER[a.id]?.order ?? 99;
+      const ordB = CANONICAL_STAGE_ORDER[b.id]?.order ?? 99;
+      return ordA - ordB;
+    });
+
   const preliminaryRows: PreliminaryExcelRow[] = prelimQs
     .filter((q) => {
       const isVisible = visibleIdSet ? visibleIdSet.has(q.id) : true;
@@ -191,24 +454,33 @@ export function buildTwoSheetWorkbookData(
     })
     .map((q) => {
       const ans = sar.answers[q.id];
-      const commentSuffix =
-        ans?.comment && ans.comment.trim() ? ` (Comment: ${ans.comment.trim()})` : '';
+      const breakdownSuffix = summarizePreliminarySubBreakdown(q.id);
       const typeLabel = formatQuestionTypeLabel(q);
-      return {
+      const stageMeta = CANONICAL_STAGE_ORDER[q.id] || {
         stageNumber: q.stage || 1,
         stageLabel: `Stage ${q.stage}: ${q.stageTitle}`,
+      };
+      return {
+        stageNumber: stageMeta.stageNumber,
+        stageLabel: stageMeta.stageLabel,
         code: q.code,
         questionText: q.text,
         answerTypeLabel: typeLabel,
         inputFormat: typeLabel,
         availableOptions: formatAvailableOptionsForDisplay(q),
-        selectedResponse: `${formatAnswerForDisplay(q, ans?.value)}${commentSuffix}`,
+        selectedResponse: `${formatAnswerForDisplay(q, ans?.value)}${breakdownSuffix}`,
         dateGenerated,
       };
     });
 
-  // Sheet 2: Detailed Security Questionnaire (M1 to M16) — ONLY requester-responded visible questions
-  const detailedQs = definition.questions.filter((q) => q.stage === undefined);
+  // Sheet 2: Detailed Security Questionnaire (M1 to M16) — ONLY requester-responded visible questions, sorted M1..M16
+  const detailedQs = definition.questions
+    .filter((q) => q.stage === undefined)
+    .sort((a, b) => {
+      const modDiff = extractNumericOrder(a.moduleId) - extractNumericOrder(b.moduleId);
+      if (modDiff !== 0) return modDiff;
+      return extractNumericOrder(a.code) - extractNumericOrder(b.code);
+    });
   const activeModules = evalRes?.activeModules || [];
   const activeModCodes = new Set(activeModules.map((m) => m.code));
 
@@ -223,24 +495,30 @@ export function buildTwoSheetWorkbookData(
     .map((q) => {
       const ans = sar.answers[q.id];
       const rawVal = ans?.value;
-      const extraNote = ans?.naReason
-        ? ` (N/A Justification: ${ans.naReason})`
-        : ans?.unknownNote
-        ? ` (Note: ${ans.unknownNote})`
-        : '';
-      const commentSuffix =
-        ans?.comment && ans.comment.trim() && q.answerType !== 'long_text'
-          ? ` (Notes: ${ans.comment.trim()})`
+
+      const threadVal = sar.answers[`${q.id}_THREADS`]?.value;
+      const threadSuffix =
+        threadVal && typeof threadVal === 'object' && !Array.isArray(threadVal)
+          ? (() => {
+              const entries = Object.entries(threadVal as Record<string, string>);
+              return entries.length > 0
+                ? ` — Verified Across User Threads: ${entries
+                    .map(([k, v]) => `${humanizeToken(k)}: ${v.toUpperCase()}`)
+                    .join(' | ')}`
+                : '';
+            })()
           : '';
+
+      const cleanTitle = modTitleByCode.get(q.moduleId) || q.moduleId;
 
       return {
         moduleCode: q.moduleId,
-        moduleTitle: modTitleByCode.get(q.moduleId) || q.moduleId,
+        moduleTitle: `${q.moduleId} — ${cleanTitle}`,
         code: q.code,
         questionText: q.text,
         inputFormat: formatQuestionTypeLabel(q),
         availableOptions: formatAvailableOptionsForDisplay(q),
-        selectedResponse: `${formatAnswerForDisplay(q, rawVal)}${extraNote}${commentSuffix}`,
+        selectedResponse: `${formatAnswerForDisplay(q, rawVal)}${threadSuffix}`,
         dateGenerated,
       };
     });
@@ -276,7 +554,7 @@ function estimateExcelRowHeight(cells: XmlCellSpec[]): number {
     if (!str) continue;
     const explicitLines = str.split(/\r?\n/);
     let totalWrappedLines = 0;
-    const wrapLimit = c.mergeAcross && c.mergeAcross >= 2 ? 95 : 58;
+    const wrapLimit = c.mergeAcross && c.mergeAcross >= 1 ? 82 : 52;
     for (const line of explicitLines) {
       totalWrappedLines += Math.max(1, Math.ceil(line.length / wrapLimit));
     }
@@ -284,7 +562,7 @@ function estimateExcelRowHeight(cells: XmlCellSpec[]): number {
       maxLines = totalWrappedLines;
     }
   }
-  return Math.min(180, Math.max(22, maxLines * 15 + 7));
+  return Math.min(200, Math.max(24, maxLines * 15 + 8));
 }
 
 function makeStyledXmlRow(cells: XmlCellSpec[], height?: number): string {
@@ -303,10 +581,10 @@ function makeStyledXmlRow(cells: XmlCellSpec[], height?: number): string {
 }
 
 /**
- * Generates a clean, simple, properly formatted 2-Sheet Excel Workbook (.xls SpreadsheetML):
- *  - Sheet 1: Preliminary Checklist (Project Details & Preliminary Responses)
- *  - Sheet 2: Security Checklist (Detailed Section Responses, Firewall Rules, Integrations & Attachments)
- * Both sheets use a consistent 5-column grid with automatic text wrapping and row height calculation.
+ * Generates a clean, executive-ready 2-Sheet Excel Workbook (.xls SpreadsheetML):
+ *  - Sheet 1: Preliminary Checklist (Project Details & Stage 1–4 Preliminary Discovery Responses)
+ *  - Sheet 2: Security Checklist (Detailed Security Domain Responses M1–M16, Firewall Matrix & Integrations)
+ * Only relevant, requester-responded information is included with crisp headings and automatic text wrapping.
  */
 export function generateExcelWorkbookXML(
   sar: SARRecord,
@@ -315,36 +593,36 @@ export function generateExcelWorkbookXML(
   const data = buildTwoSheetWorkbookData(sar, definition);
 
   // ==========================================================================
-  // SHEET 1: Preliminary Checklist (Clean 5-Column Layout)
+  // SHEET 1: Preliminary Checklist (Clean 4-Column Layout Merged to 5-Grid)
   // ==========================================================================
   const sheet1Rows: string[] = [
     makeStyledXmlRow(
       [
         {
-          value: `SAR ASSIST — SHEET 1: PRELIMINARY CHECKLIST · ${sar.displayId} · Date: ${data.dateGenerated}`,
+          value: `ISG SECURITY ARCHITECTURE CHECKLIST — SHEET 1: PRELIMINARY DISCOVERY · ${sar.displayId} · Date Generated: ${data.dateGenerated}`,
           styleId: 'TitleBanner',
           mergeAcross: 4,
         },
       ],
-      30
+      32
     ),
     makeStyledXmlRow(
       [
         {
-          value: 'SECTION 1A: PROJECT & REQUEST DETAILS',
+          value: 'SECTION 1A: PROJECT & REQUEST BASICS',
           styleId: 'SectionBanner',
           mergeAcross: 4,
         },
       ],
-      24
+      25
     ),
     makeStyledXmlRow(
       [
         { value: 'Category', styleId: 'Header' },
         { value: 'Field', styleId: 'Header' },
-        { value: 'Project Details / Recorded Value', styleId: 'Header', mergeAcross: 2 },
+        { value: 'Requester Response', styleId: 'Header', mergeAcross: 2 },
       ],
-      24
+      25
     ),
     ...data.metadataRows.map((m, idx) =>
       makeStyledXmlRow([
@@ -363,33 +641,22 @@ export function generateExcelWorkbookXML(
           makeStyledXmlRow(
             [
               {
-                value: `SECTION 1B: AI ARCHITECTURE REVIEW SUMMARY — TAGGED TO "${
+                value: `SECTION 1B: AI SECURITY ARCHITECTURE REVIEW SUMMARY — ${
                   sar.aiSummary.projectName || sar.basics.projectName || sar.displayId
-                }" (${sar.aiSummary.overallRiskPosture.toUpperCase()})`,
+                } (POSTURE: ${sar.aiSummary.overallRiskPosture.toUpperCase()})`,
                 styleId: 'SectionBanner',
                 mergeAcross: 4,
               },
             ],
-            24
+            25
           ),
           makeStyledXmlRow([
-            { value: 'Tagged Project / Request Name', styleId: 'SubHeader' },
+            { value: 'Executive Summary', styleId: 'SubHeader' },
             { value: sar.displayId, styleId: 'CodeCell' },
-            {
-              value: `${sar.aiSummary.projectName || sar.basics.projectName || sar.displayId} (${
-                sar.aiSummary.businessUnit || sar.basics.businessUnit || 'Enterprise Banking'
-              })`,
-              styleId: 'AnswerCell',
-              mergeAcross: 2,
-            },
-          ]),
-          makeStyledXmlRow([
-            { value: 'Executive Summary (What This Review Is About)', styleId: 'SubHeader' },
-            { value: 'Overview', styleId: 'CodeCell' },
             { value: sar.aiSummary.executiveSummary, styleId: 'AnswerCell', mergeAcross: 2 },
           ]),
           makeStyledXmlRow([
-            { value: 'Change Scope & Architecture', styleId: 'SubHeader' },
+            { value: 'Architecture & Trust Boundaries', styleId: 'SubHeader' },
             { value: 'Scope', styleId: 'CodeCell' },
             {
               value: sar.aiSummary.changeScopeAndArchitecture,
@@ -397,33 +664,11 @@ export function generateExcelWorkbookXML(
               mergeAcross: 2,
             },
           ]),
-          ...(sar.aiSummary.stageHighlights.length > 0
-            ? [
-                makeStyledXmlRow([
-                  { value: 'Checklist Scope & Major Control Points', styleId: 'SubHeader' },
-                  { value: 'Highlights', styleId: 'CodeCell' },
-                  {
-                    value: sar.aiSummary.stageHighlights
-                      .map(
-                        (h) =>
-                          `${h.stageTitle}: ${h.summary}${
-                            h.keySelections && h.keySelections.length > 0
-                              ? ` [${h.keySelections.join('; ')}]`
-                              : ''
-                          }`
-                      )
-                      .join(' | '),
-                    styleId: 'Body',
-                    mergeAcross: 2,
-                  },
-                ]),
-              ]
-            : []),
           ...(sar.aiSummary.recommendedReviewerFocus.length > 0
             ? [
                 makeStyledXmlRow([
-                  { value: 'Priority Reviewer Focus', styleId: 'SubHeader' },
-                  { value: 'Sign-Off Focus', styleId: 'CodeCell' },
+                  { value: 'Priority Reviewer Focus Areas', styleId: 'SubHeader' },
+                  { value: 'Sign-Off', styleId: 'CodeCell' },
                   {
                     value: sar.aiSummary.recommendedReviewerFocus.join(' | '),
                     styleId: 'BodyAlt',
@@ -438,22 +683,21 @@ export function generateExcelWorkbookXML(
     makeStyledXmlRow(
       [
         {
-          value: `SECTION 1C: PRELIMINARY CHECKLIST RESPONSES (${data.preliminaryRows.length} ANSWERED)`,
+          value: `SECTION 1B: PRELIMINARY DISCOVERY RESPONSES (${data.preliminaryRows.length} ANSWERED QUESTIONS)`,
           styleId: 'SectionBanner',
           mergeAcross: 4,
         },
       ],
-      24
+      25
     ),
     makeStyledXmlRow(
       [
-        { value: 'Stage & Category', styleId: 'Header' },
-        { value: 'Code', styleId: 'Header' },
-        { value: 'Preliminary Question', styleId: 'Header' },
-        { value: 'Recorded Response', styleId: 'Header' },
-        { value: 'Input Type', styleId: 'Header' },
+        { value: 'Discovery Stage', styleId: 'Header' },
+        { value: 'Question ID', styleId: 'Header' },
+        { value: 'Preliminary Discovery Question', styleId: 'Header' },
+        { value: 'Requester Response', styleId: 'Header', mergeAcross: 1 },
       ],
-      25
+      26
     ),
     ...data.preliminaryRows.map((r, idx) => {
       const baseStyle: CellStyleId = idx % 2 === 0 ? 'Body' : 'BodyAlt';
@@ -461,98 +705,93 @@ export function generateExcelWorkbookXML(
         { value: r.stageLabel, styleId: baseStyle },
         { value: r.code, styleId: 'CodeCell' },
         { value: r.questionText, styleId: baseStyle },
-        { value: r.selectedResponse, styleId: 'AnswerCell' },
-        { value: r.answerTypeLabel, styleId: baseStyle },
+        { value: r.selectedResponse, styleId: 'AnswerCell', mergeAcross: 1 },
       ]);
     }),
   ];
 
   // ==========================================================================
-  // SHEET 2: Detailed Security Checklist (Clean 5-Column Layout)
+  // SHEET 2: Security Checklist (Clean 4-Column Layout Merged to 5-Grid)
   // ==========================================================================
   const sheet2Rows: string[] = [
     makeStyledXmlRow(
       [
         {
-          value: `SAR ASSIST — SHEET 2: DETAILED SECURITY CHECKLIST · ${sar.displayId} · Date: ${data.dateGenerated}`,
+          value: `ISG SECURITY ARCHITECTURE CHECKLIST — SHEET 2: SECURITY QUESTIONNAIRE · ${sar.displayId} · Date Generated: ${data.dateGenerated}`,
           styleId: 'TitleBanner',
           mergeAcross: 4,
         },
       ],
-      30
+      32
     ),
     makeStyledXmlRow(
       [
         {
-          value: `SECTION 2A: DETAILED SECURITY CHECKLIST RESPONSES (${data.securityQuestionnaireRows.length} ANSWERED)`,
+          value: `SECTION 2A: DETAILED SECURITY CHECKLIST RESPONSES (${data.securityQuestionnaireRows.length} ANSWERED CONTROLS)`,
           styleId: 'SectionBanner',
           mergeAcross: 4,
         },
       ],
-      24
+      25
     ),
     makeStyledXmlRow(
       [
-        { value: 'Checklist Section', styleId: 'Header' },
-        { value: 'Code', styleId: 'Header' },
-        { value: 'Security Question', styleId: 'Header' },
-        { value: 'Recorded Response', styleId: 'Header' },
-        { value: 'Input Format', styleId: 'Header' },
+        { value: 'Security Domain', styleId: 'Header' },
+        { value: 'Question ID', styleId: 'Header' },
+        { value: 'Security Control Question', styleId: 'Header' },
+        { value: 'Requester Response', styleId: 'Header', mergeAcross: 1 },
       ],
-      25
+      26
     ),
     ...data.securityQuestionnaireRows.map((r, idx) => {
       const baseStyle: CellStyleId = idx % 2 === 0 ? 'Body' : 'BodyAlt';
-      const inputFormat =
-        r.availableOptions === 'Free-Text Input' ? 'Free-Text Input' : 'Selected Option(s)';
       return makeStyledXmlRow([
-        { value: `${r.moduleCode} — ${r.moduleTitle}`, styleId: baseStyle },
+        { value: r.moduleTitle, styleId: baseStyle },
         { value: r.code, styleId: 'CodeCell' },
         { value: r.questionText, styleId: baseStyle },
-        { value: r.selectedResponse, styleId: 'AnswerCell' },
-        { value: inputFormat, styleId: baseStyle },
+        { value: r.selectedResponse, styleId: 'AnswerCell', mergeAcross: 1 },
       ]);
     }),
   ];
 
-  // Section 2B: Firewall Port Rules (Aligned to 5 columns)
+  // Section 2B: Firewall Port Rules (Only if populated)
   if (sar.tables.firewall_rules.length > 0) {
     sheet2Rows.push(
       makeStyledXmlRow([{ value: '', styleId: 'Body', mergeAcross: 4 }], 10),
       makeStyledXmlRow(
         [
           {
-            value: `SECTION 2B: NETWORK & FIREWALL PORT RULES (${sar.tables.firewall_rules.length} ROWS)`,
+            value: `SECTION 2B: NETWORK & FIREWALL PORT MATRIX (${sar.tables.firewall_rules.length} RULES)`,
             styleId: 'SectionBanner',
             mergeAcross: 4,
           },
         ],
-        24
+        25
       ),
       makeStyledXmlRow(
         [
           { value: 'Environment & Direction', styleId: 'Header' },
           { value: 'Port / Protocol', styleId: 'Header' },
-          { value: 'Source IP -> Destination IP', styleId: 'Header' },
+          { value: 'Source IP / CIDR', styleId: 'Header' },
+          { value: 'Destination IP / CIDR', styleId: 'Header' },
           { value: 'Business Purpose', styleId: 'Header' },
-          { value: 'Date Recorded', styleId: 'Header' },
         ],
-        24
+        25
       ),
       ...sar.tables.firewall_rules.map((f, idx) => {
         const baseStyle: CellStyleId = idx % 2 === 0 ? 'Body' : 'BodyAlt';
         return makeStyledXmlRow([
           { value: `${f.environment} (${f.direction})`, styleId: baseStyle },
           { value: `${f.port} / ${f.protocol}`, styleId: 'CodeCell' },
-          { value: `${f.source}  ->  ${f.destination}`, styleId: 'CodeCell' },
+          { value: f.source, styleId: 'CodeCell' },
+          { value: f.destination, styleId: 'CodeCell' },
           { value: f.purpose, styleId: baseStyle },
-          { value: data.dateGenerated, styleId: baseStyle },
         ]);
       })
     );
   }
 
-  // Section 2C: API Endpoints & System Integrations (Aligned to 5 columns)
+  // Section 2C: API Endpoints & System Integrations (Only if populated)
   if (sar.tables.api_endpoints.length > 0 || sar.tables.integrations.length > 0) {
     sheet2Rows.push(
       makeStyledXmlRow([{ value: '', styleId: 'Body', mergeAcross: 4 }], 10),
@@ -564,17 +803,17 @@ export function generateExcelWorkbookXML(
             mergeAcross: 4,
           },
         ],
-        24
+        25
       ),
       makeStyledXmlRow(
         [
-          { value: 'Type & Method / Direction', styleId: 'Header' },
-          { value: 'Auth / Channel', styleId: 'Header' },
-          { value: 'Endpoint Path / Connected System', styleId: 'Header' },
-          { value: 'Exposure / Data Shared', styleId: 'Header' },
+          { value: 'Integration Type', styleId: 'Header' },
+          { value: 'Authentication / Channel', styleId: 'Header' },
+          { value: 'Endpoint URI / Counterparty System', styleId: 'Header' },
+          { value: 'Network Exposure / Data Shared', styleId: 'Header' },
           { value: 'Classification / Frequency', styleId: 'Header' },
         ],
-        24
+        25
       ),
       ...sar.tables.api_endpoints.map((a, idx) => {
         const baseStyle: CellStyleId = idx % 2 === 0 ? 'Body' : 'BodyAlt';
@@ -589,52 +828,11 @@ export function generateExcelWorkbookXML(
       ...sar.tables.integrations.map((i, idx) => {
         const baseStyle: CellStyleId = idx % 2 === 0 ? 'Body' : 'BodyAlt';
         return makeStyledXmlRow([
-          { value: `Integration (${i.direction})`, styleId: baseStyle },
+          { value: `System Integration (${i.direction})`, styleId: baseStyle },
           { value: i.channel, styleId: 'CodeCell' },
           { value: i.counterparty, styleId: baseStyle },
           { value: i.dataShared, styleId: baseStyle },
           { value: i.frequency, styleId: baseStyle },
-        ]);
-      })
-    );
-  }
-
-  const uploadedAttachments = sar.attachments.flatMap((slot) =>
-    slot.files.map((f) => ({ slotTitle: slot.title, file: f }))
-  );
-
-  // Section 2D: Uploaded Supporting Documents (Aligned to 5 columns)
-  if (uploadedAttachments.length > 0) {
-    sheet2Rows.push(
-      makeStyledXmlRow([{ value: '', styleId: 'Body', mergeAcross: 4 }], 10),
-      makeStyledXmlRow(
-        [
-          {
-            value: 'SECTION 2D: UPLOADED ARCHITECTURE DIAGRAMS & SUPPORTING DOCUMENTS',
-            styleId: 'SectionBanner',
-            mergeAcross: 4,
-          },
-        ],
-        24
-      ),
-      makeStyledXmlRow(
-        [
-          { value: 'Document Category', styleId: 'Header' },
-          { value: 'Version', styleId: 'Header' },
-          { value: 'File Name', styleId: 'Header' },
-          { value: 'SHA-256 Checksum', styleId: 'Header' },
-          { value: 'Verification Status', styleId: 'Header' },
-        ],
-        24
-      ),
-      ...uploadedAttachments.map((item, idx) => {
-        const baseStyle: CellStyleId = idx % 2 === 0 ? 'Body' : 'BodyAlt';
-        return makeStyledXmlRow([
-          { value: item.slotTitle, styleId: baseStyle },
-          { value: `v${item.file.version}`, styleId: 'CodeCell' },
-          { value: item.file.sanitizedName, styleId: 'AnswerCell' },
-          { value: item.file.sha256, styleId: 'CodeCell' },
-          { value: item.file.scanStatus === 'clean' ? 'Verified' : 'Quarantined', styleId: baseStyle },
         ]);
       })
     );
@@ -704,7 +902,7 @@ export function generateExcelWorkbookXML(
   <Style ss:ID="CodeCell">
    <Font ss:FontName="Consolas" ss:Size="9.5" ss:Bold="1" ss:Color="#1E293B"/>
    <Interior ss:Color="#F1F5F9" ss:Pattern="Solid"/>
-   <Alignment ss:Vertical="Top" ss:Horizontal="Left" ss:WrapText="1"/>
+   <Alignment ss:Vertical="Top" ss:Horizontal="Center" ss:WrapText="1"/>
    <Borders>
     <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
     <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
@@ -726,11 +924,11 @@ export function generateExcelWorkbookXML(
  </Styles>
  <Worksheet ss:Name="1_Preliminary_Checklist">
   <Table>
-   <Column ss:Width="175"/>
-   <Column ss:Width="95"/>
-   <Column ss:Width="310"/>
-   <Column ss:Width="360"/>
-   <Column ss:Width="135"/>
+   <Column ss:Width="210"/>
+   <Column ss:Width="85"/>
+   <Column ss:Width="340"/>
+   <Column ss:Width="260"/>
+   <Column ss:Width="220"/>
    ${sheet1Rows.join('\n   ')}
   </Table>
   <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">
@@ -739,11 +937,11 @@ export function generateExcelWorkbookXML(
  </Worksheet>
  <Worksheet ss:Name="2_Security_Checklist">
   <Table>
-   <Column ss:Width="185"/>
+   <Column ss:Width="210"/>
    <Column ss:Width="85"/>
-   <Column ss:Width="320"/>
-   <Column ss:Width="380"/>
-   <Column ss:Width="130"/>
+   <Column ss:Width="340"/>
+   <Column ss:Width="260"/>
+   <Column ss:Width="220"/>
    ${sheet2Rows.join('\n   ')}
   </Table>
   <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">
@@ -894,10 +1092,10 @@ export function generatePrintableReportHTML(
       : ''
   }
 
-  <h2>2. Sheet 1 — Preliminary Questions &amp; Options (${data.preliminaryRows.length} Requester Responses)</h2>
+  <h2>2. Sheet 1 — Preliminary Discovery Responses (${data.preliminaryRows.length} Answered Questions)</h2>
   <table>
     <thead>
-      <tr><th style="width: 150px;">Stage</th><th style="width: 60px;">Code</th><th>Preliminary Question</th><th>Available Options</th><th style="width: 220px;">Requester Response</th><th style="width: 100px;">Date Generated</th></tr>
+      <tr><th style="width: 190px;">Discovery Stage</th><th style="width: 75px;">Question ID</th><th>Preliminary Discovery Question</th><th style="width: 320px;">Requester Response</th></tr>
     </thead>
     <tbody>
       ${data.preliminaryRows
@@ -905,41 +1103,31 @@ export function generatePrintableReportHTML(
           (r) =>
             `<tr><td>${escapeHtml(r.stageLabel)}</td><td class="mono">${escapeHtml(r.code)}</td><td>${escapeHtml(
               r.questionText
-            )}</td><td style="font-size: 11px; color: #475569;">${escapeHtml(
-              r.availableOptions
-            )}</td><td><strong>${escapeHtml(r.selectedResponse)}</strong></td><td class="mono">${escapeHtml(
-              r.dateGenerated
-            )}</td></tr>`
+            )}</td><td><strong>${escapeHtml(r.selectedResponse)}</strong></td></tr>`
         )
         .join('')}
     </tbody>
   </table>
 
-  <h2>3. Sheet 2 — Security Checklist (${data.securityQuestionnaireRows.length} Requester Responses)</h2>
+  <h2>3. Sheet 2 — Detailed Security Checklist (${data.securityQuestionnaireRows.length} Answered Controls)</h2>
   <table>
     <thead>
-      <tr><th style="width: 70px;">Section</th><th style="width: 150px;">Security Domain</th><th style="width: 65px;">Control</th><th>Security Control / Requirement</th><th>Available Options / Format</th><th style="width: 230px;">Requester Response</th><th style="width: 100px;">Date Generated</th></tr>
+      <tr><th style="width: 190px;">Security Domain</th><th style="width: 75px;">Question ID</th><th>Security Control Question</th><th style="width: 320px;">Requester Response</th></tr>
     </thead>
     <tbody>
       ${data.securityQuestionnaireRows
         .map(
           (r) =>
-            `<tr><td class="mono">${escapeHtml(r.moduleCode)}</td><td>${escapeHtml(
-              r.moduleTitle
-            )}</td><td class="mono">${escapeHtml(r.code)}</td><td>${escapeHtml(
+            `<tr><td>${escapeHtml(r.moduleTitle)}</td><td class="mono">${escapeHtml(r.code)}</td><td>${escapeHtml(
               r.questionText
-            )}</td><td style="font-size: 11px; color: #475569;">${escapeHtml(
-              r.availableOptions
-            )}</td><td><strong>${escapeHtml(r.selectedResponse)}</strong></td><td class="mono">${escapeHtml(
-              r.dateGenerated
-            )}</td></tr>`
+            )}</td><td><strong>${escapeHtml(r.selectedResponse)}</strong></td></tr>`
         )
         .join('')}
     </tbody>
   </table>
 
   <div class="footer mono">
-    <div>SAR ASSIST — SECURITY ARCHITECTURE REVIEW RECORD</div>
+    <div>ISG's Security Architecture Checklist</div>
     <div>Date Generated: ${escapeHtml(data.dateGenerated)}</div>
   </div>
 </body>

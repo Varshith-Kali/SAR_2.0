@@ -1,1077 +1,936 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { motion } from 'motion/react';
 import {
-  AlertCircle,
-  ArrowLeft,
+  CheckCircle2,
   ArrowRight,
-  Check,
-  FileCheck,
-  FileWarning,
-  Info,
-  Lock,
-  ShieldAlert,
-  Upload,
-  X,
+  ArrowLeft,
+  HelpCircle,
+  Layers,
+  CornerDownRight,
 } from 'lucide-react';
-import { evaluateFlowGates } from '../shared/rulesEngine';
 import {
-  AttachmentFile,
-  AttachmentSlotState,
+  SARRecord,
   DefinitionVersion,
   ModuleCode,
   QuestionDefinition,
+  AnswerEntry,
   RepeaterTablesData,
-  SARRecord,
-  UserPersona,
 } from '../shared/types';
+import {
+  resolveActiveUserThreads,
+  getDetailedQuestionChainConfig,
+  THREAD_DIMENSIONS,
+} from '../shared/checklistChains';
+import { CMDB_APPLICATIONS } from '../shared/definitions';
+import { CyberKickerTrace } from './CyberScrollTrace';
 import { RepeaterTableEditors } from './RepeaterTableEditors';
+
+function getThreadShortLabel(dimKey: string, optionId?: string): string {
+  if (!optionId) return 'Default';
+  const dim = THREAD_DIMENSIONS.find((d) => d.id === dimKey);
+  const found = dim?.options.find((o) => o.id === optionId);
+  return found ? found.shortLabel : optionId;
+}
+
+function getCrispWhyText(rawText?: string, fallbackText?: string): string {
+  const source = (rawText || fallbackText || '').trim();
+  if (!source) return 'Verifies that this security control is in place before production release.';
+  const firstSentence = source.split(/(?<=[.!?])\s+/)[0] || source;
+  return firstSentence.length > 150 ? `${firstSentence.slice(0, 147)}...` : firstSentence;
+}
 
 interface DetailedModulesViewProps {
   sar: SARRecord;
   definition: DefinitionVersion;
-  currentPersona: UserPersona;
   activeModule: ModuleCode;
-  onSelectModule: (code: ModuleCode) => void;
+  onSelectModule: (moduleCode: ModuleCode) => void;
   onAnswerQuestion: (
     questionId: string,
     value: unknown,
-    extra?: { naReason?: string; unknownOwner?: string; unknownNote?: string; comment?: string }
+    extra?: { comment?: string; naReason?: string; unknownOwner?: string; unknownNote?: string }
   ) => void;
   onUpdateTables: (tables: RepeaterTablesData) => void;
-  onUpdateAttachments: (attachments: AttachmentSlotState[]) => void;
   onBackToPreliminary: () => void;
   onProceedToReview: () => void;
 }
 
-const ALLOWED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.docx', '.xlsx', '.vsdx', '.drawio', '.xml'];
-const DANGEROUS_DOUBLE_EXT_REGEX =
-  /\.(exe|dll|bat|cmd|sh|ps1|vbs|js|mjs|cjs|jsp|php|py|rb|pl|jar|msi|scr|com|pif|hta|svg|html|htm|xhtml|swf)\./i;
+function isQuestionAnswered(ans?: AnswerEntry): boolean {
+  if (!ans || ans.state === 'inactive') return false;
+  const val = ans.value;
+  if (val === undefined || val === null || val === '') return false;
+  if (Array.isArray(val)) return val.length > 0;
+  if (typeof val === 'object') return Object.keys(val as object).length > 0;
+  return true;
+}
 
-async function verifyMagicBytesAndHash(file: File): Promise<{
-  sha256: string;
-  magicBytesStatus: 'verified' | 'mismatch_quarantined';
-}> {
-  const buffer = await file.arrayBuffer();
-  const bytes = new Uint8Array(buffer.slice(0, 16));
-  const lowerName = file.name.toLowerCase();
+function formatModuleTitle(title: string): string {
+  return title.replace(/^Module\s+\d+\s*[—–-]\s*/i, '');
+}
 
-  // Block executables (PE 'MZ' 0x4D 0x5A, ELF 0x7F 'E' 'L' 'F', Mach-O, shell scripts '#!')
-  const isExeOrScript =
-    (bytes[0] === 0x4d && bytes[1] === 0x5a) ||
-    (bytes[0] === 0x7f && bytes[1] === 0x45 && bytes[2] === 0x4c && bytes[3] === 0x46) ||
-    (bytes[0] === 0x23 && bytes[1] === 0x21);
+function extractNumericOrder(codeOrId: string): number {
+  const match = codeOrId.match(/(\d+)$/);
+  return match ? parseInt(match[1], 10) : 0;
+}
 
-  let magicMismatch =
-    isExeOrScript ||
-    DANGEROUS_DOUBLE_EXT_REGEX.test(lowerName) ||
-    lowerName.includes('malware') ||
-    lowerName.includes('renamed_exe');
+function getContextualDetailedQuestionTitle(
+  q: QuestionDefinition,
+  primaryApp: string,
+  connectedApps: string[]
+): string {
+  const text = q.text || '';
+  if (!primaryApp || primaryApp === 'Primary Application') return text;
 
-  // Positive magic-byte verification per file extension
-  if (!magicMismatch && bytes.length >= 4) {
-    if (lowerName.endsWith('.pdf')) {
-      // Must begin with %PDF (0x25 0x50 0x44 0x46)
-      if (!(bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46)) {
-        magicMismatch = true;
-      }
-    } else if (lowerName.endsWith('.png')) {
-      // Must begin with PNG signature 0x89 0x50 0x4E 0x47
-      if (!(bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47)) {
-        magicMismatch = true;
-      }
-    } else if (lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')) {
-      // Must begin with JPEG SOI 0xFF 0xD8 0xFF
-      if (!(bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff)) {
-        magicMismatch = true;
-      }
-    } else if (
-      lowerName.endsWith('.docx') ||
-      lowerName.endsWith('.xlsx') ||
-      lowerName.endsWith('.vsdx')
-    ) {
-      // OOXML ZIP container must start with PK\x03\x04 (0x50 0x4B 0x03 0x04)
-      if (!(bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04)) {
-        magicMismatch = true;
-      }
-    } else if (lowerName.endsWith('.drawio') || lowerName.endsWith('.xml')) {
-      // OWASP A05/A03 XXE & XSS check on XML/draw.io files
-      const sampleText = new TextDecoder('utf-8', { fatal: false }).decode(
-        buffer.slice(0, Math.min(buffer.byteLength, 65536))
-      );
-      if (
-        /<!ENTITY\b|<!DOCTYPE\b|<\s*script\b|javascript\s*:/i.test(sampleText)
-      ) {
-        magicMismatch = true;
-      }
-    }
+  const hasConnected = connectedApps.length > 0;
+  const connectedLabel =
+    connectedApps.length <= 2
+      ? connectedApps.join(' & ')
+      : `${connectedApps.slice(0, 2).join(', ')} +${connectedApps.length - 2} more`;
+
+  let contextual = text
+    .replace(/\bthis application\b/gi, primaryApp)
+    .replace(/\bthe application\b/gi, primaryApp)
+    .replace(/\bthis solution\b/gi, primaryApp)
+    .replace(/\bthe solution\b/gi, primaryApp);
+
+  if (
+    hasConnected &&
+    (q.moduleId === 'M9' || q.moduleId === 'M8') &&
+    !contextual.includes(connectedLabel) &&
+    /\b(partner|connected|integration|external|api|file|webhook)\b/i.test(contextual)
+  ) {
+    contextual = `${contextual} (${primaryApp} ↔ ${connectedLabel})`;
   }
 
-  let sha256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
-  try {
-    if (window.crypto?.subtle) {
-      const hashBuf = await window.crypto.subtle.digest('SHA-256', buffer);
-      sha256 = Array.from(new Uint8Array(hashBuf))
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('');
-    }
-  } catch {
-    // Fallback deterministic hash
-  }
-
-  return {
-    sha256,
-    magicBytesStatus: magicMismatch ? 'mismatch_quarantined' : 'verified',
-  };
+  return contextual;
 }
 
 export const DetailedModulesView: React.FC<DetailedModulesViewProps> = ({
   sar,
   definition,
-  currentPersona,
   activeModule,
   onSelectModule,
   onAnswerQuestion,
   onUpdateTables,
-  onUpdateAttachments,
   onBackToPreliminary,
   onProceedToReview,
 }) => {
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [questionFilter, setQuestionFilter] = useState<'all' | 'mandatory' | 'unanswered'>('all');
-  const [moduleGateError, setModuleGateError] = useState<string | null>(null);
-  const [activeHelpQId, setActiveHelpQId] = useState<string | null>(null);
+  const [hoveredWhyId, setHoveredWhyId] = useState<string | null>(null);
 
-  const evalRes = sar.evaluation;
-  const activeModules = evalRes?.activeModules || [];
-  const isReadOnly = sar.status === 'submitted';
-  const flowGates = useMemo(() => evaluateFlowGates(sar, definition), [sar, definition]);
-
-  const checklistModules = useMemo(
-    () => activeModules.filter((m) => m.code !== 'M0'),
-    [activeModules]
+  const evaluation = sar.evaluation;
+  const visibleSet = useMemo(
+    () => new Set(evaluation?.visibleQuestionIds || []),
+    [evaluation?.visibleQuestionIds]
   );
-  const currentModInfo =
-    checklistModules.find((m) => m.code === activeModule) ||
-    checklistModules[0];
 
-  // Smooth scroll to top and reset transient popovers when switching modules
+  // Strict ascending numerical order M1 -> M16
+  const activeModules = useMemo(
+    () =>
+      [...(evaluation?.activeModules || [])]
+        .filter((m) => m.code !== 'M0' && m.code !== 'M17')
+        .sort((a, b) => extractNumericOrder(a.code) - extractNumericOrder(b.code)),
+    [evaluation?.activeModules]
+  );
+
   useEffect(() => {
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    setActiveHelpQId(null);
-    setModuleGateError(null);
-  }, [currentModInfo?.code]);
-
-  const scrollToMissingQuestion = (questionId: string) => {
-    window.setTimeout(() => {
-      const el =
-        document.getElementById(`question-${questionId}`) ||
-        document.querySelector(`[data-question-code="${questionId}"]`);
-      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 60);
-  };
-
-  const tryProceedToReview = () => {
-    if (!flowGates.modulesComplete && !isReadOnly) {
-      const firstMissing = flowGates.missingDetailedQuestions[0];
-      setModuleGateError(
-        `${flowGates.missingDetailedQuestions.length} required checklist question(s) remaining before Review & Submit.`
-      );
-      setTimeout(() => setModuleGateError(null), 3500);
-      if (firstMissing) {
-        if (firstMissing.moduleId !== currentModInfo?.code) {
-          onSelectModule(firstMissing.moduleId);
-        }
-        scrollToMissingQuestion(firstMissing.code);
-      }
-      return;
+    if (
+      activeModules.length > 0 &&
+      !activeModules.some((m) => m.code === activeModule)
+    ) {
+      onSelectModule(activeModules[0].code);
     }
-    setModuleGateError(null);
-    onProceedToReview();
-  };
+  }, [activeModules, activeModule, onSelectModule]);
 
-  const visibleQIds = useMemo(() => new Set(evalRes?.visibleQuestionIds || []), [evalRes?.visibleQuestionIds]);
-  const requiredQIds = useMemo(() => new Set(evalRes?.requiredQuestionIds || []), [evalRes?.requiredQuestionIds]);
-  const hardRequiredQIds = useMemo(() => new Set(evalRes?.hardRequiredQuestionIds || []), [evalRes?.hardRequiredQuestionIds]);
+  const currentModule = useMemo(
+    () => activeModules.find((m) => m.code === activeModule) || activeModules[0],
+    [activeModules, activeModule]
+  );
 
-  const currentModDef = definition.modules.find((m) => m.code === currentModInfo?.code);
+  const currentModuleDef = useMemo(
+    () => definition.modules.find((m) => m.code === currentModule?.code),
+    [definition.modules, currentModule?.code]
+  );
 
-  // Pre-compute visible & answered question counts per module in a single O(N) pass for smooth rendering
-  const moduleProgressMap = useMemo(() => {
-    const map = new Map<ModuleCode, { total: number; answered: number }>();
-    for (const q of definition.questions) {
-      if (q.stage !== undefined || !visibleQIds.has(q.id)) continue;
-      let entry = map.get(q.moduleId);
-      if (!entry) {
-        entry = { total: 0, answered: 0 };
-        map.set(q.moduleId, entry);
-      }
-      entry.total++;
-      const v = sar.answers[q.id]?.value;
-      if (
-        v !== undefined &&
-        v !== null &&
-        v !== '' &&
-        !(Array.isArray(v) && v.length === 0)
-      ) {
-        entry.answered++;
-      }
-    }
+  const currentModuleIndex = useMemo(
+    () => activeModules.findIndex((m) => m.code === currentModule?.code),
+    [activeModules, currentModule]
+  );
+
+  // Strict top-to-bottom ascending order of questions within each module
+  const questionsByModuleMap = useMemo(() => {
+    const map: Record<string, QuestionDefinition[]> = {};
+    activeModules.forEach((m) => {
+      map[m.code] = definition.questions
+        .filter((q) => q.moduleId === m.code && visibleSet.has(q.id))
+        .sort((a, b) => extractNumericOrder(a.id) - extractNumericOrder(b.id));
+    });
     return map;
-  }, [definition.questions, visibleQIds, sar.answers]);
+  }, [activeModules, definition.questions, visibleSet]);
 
-  const allModuleQuestions = useMemo(
-    () =>
-      definition.questions.filter(
-        (q) => q.stage === undefined && q.moduleId === currentModInfo?.code
-      ),
-    [definition.questions, currentModInfo?.code]
-  );
-  const visibleModuleQuestions = useMemo(
-    () => allModuleQuestions.filter((q) => visibleQIds.has(q.id)),
-    [allModuleQuestions, visibleQIds]
-  );
-  const moduleQuestions = useMemo(
-    () =>
-      visibleModuleQuestions.filter((q) => {
-        if (questionFilter === 'mandatory') {
-          return requiredQIds.has(q.id) || hardRequiredQIds.has(q.id);
-        }
-        if (questionFilter === 'unanswered') {
-          const v = sar.answers[q.id]?.value;
-          return v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
-        }
-        return true;
-      }),
-    [visibleModuleQuestions, questionFilter, requiredQIds, hardRequiredQIds, sar.answers]
+  const currentModuleQuestions = useMemo(
+    () => (currentModule ? questionsByModuleMap[currentModule.code] || [] : []),
+    [currentModule, questionsByModuleMap]
   );
 
-  // Filter options dynamically by hosting topology (On-Prem vs Cloud vs Hybrid) while preserving any active selection
-  const filterOptionsByHosting = (q: QuestionDefinition) => {
-    if (!q.options) return [];
-    const onPrem = Boolean(evalRes?.flags.on_prem_hosted);
-    const cloud = Boolean(evalRes?.flags.cloud_hosted);
-    if (!onPrem && !cloud) return q.options;
-
-    const currentRaw = sar.answers[q.id]?.value;
-    const selectedSet = new Set(
-      Array.isArray(currentRaw)
-        ? currentRaw.map(String)
-        : currentRaw !== undefined && currentRaw !== null && currentRaw !== ''
-        ? [String(currentRaw)]
-        : []
-    );
-
-    const filtered = q.options.filter((opt) => {
-      if (!opt.hostingFilter || opt.hostingFilter.length === 0) return true;
-      if (selectedSet.has(opt.id)) return true;
-      if (onPrem && opt.hostingFilter.includes('on_prem')) return true;
-      if (cloud && opt.hostingFilter.includes('cloud')) return true;
-      if ((cloud || Boolean(evalRes?.flags.vendor_involved)) && opt.hostingFilter.includes('saas')) return true;
-      return false;
+  const overallStats = useMemo(() => {
+    let total = 0;
+    let answered = 0;
+    activeModules.forEach((m) => {
+      const qs = questionsByModuleMap[m.code] || [];
+      total += qs.length;
+      qs.forEach((q) => {
+        if (isQuestionAnswered(sar.answers[q.id])) answered += 1;
+      });
     });
+    return { total, answered };
+  }, [activeModules, questionsByModuleMap, sar.answers]);
 
-    return filtered.length > 0 ? filtered : q.options;
-  };
+  const { activeUserTypes, matrix: threadMatrix } = useMemo(
+    () => resolveActiveUserThreads(sar.answers),
+    [sar.answers]
+  );
 
-  const handleFileUpload = async (
-    slotId: AttachmentSlotState['slotId'],
-    e: React.ChangeEvent<HTMLInputElement>
+  const primarySolutionName = useMemo(() => {
+    const raw = (sar.basics.projectName || '').trim();
+    if (!raw) return 'Primary Application Under Review';
+    return raw.length > 64 ? `${raw.slice(0, 61)}...` : raw;
+  }, [sar.basics.projectName]);
+
+  const connectedSystemNames = useMemo(() => {
+    const names: string[] = [];
+    (sar.basics.connectedAppIds || []).forEach((id) => {
+      const found = CMDB_APPLICATIONS.find((a) => a.id === id);
+      if (found) names.push(found.canonicalName);
+    });
+    (sar.basics.customConnectedApps || []).forEach((custom) => {
+      if (custom && custom.trim()) names.push(custom.trim());
+    });
+    return names;
+  }, [sar.basics.connectedAppIds, sar.basics.customConnectedApps]);
+
+  const handleToggleFollowUpYesNo = (
+    questionId: string,
+    followUpId: string,
+    val: 'yes' | 'no'
   ) => {
-    setUploadError(null);
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const lower = file.name.toLowerCase();
-    const isAllowedExt = ALLOWED_EXTENSIONS.some((ext) => lower.endsWith(ext));
-    if (!isAllowedExt || DANGEROUS_DOUBLE_EXT_REGEX.test(lower)) {
-      setUploadError(
-        `Blocked file "${file.name}". Allowed types: PDF, PNG, JPG, DOCX, XLSX, VSDX, draw.io (double extensions prohibited).`
-      );
-      e.target.value = '';
-      return;
-    }
-
-    if (file.size > 25 * 1024 * 1024) {
-      setUploadError('File exceeds 25 MB maximum upload size limit.');
-      e.target.value = '';
-      return;
-    }
-
-    const { sha256, magicBytesStatus } = await verifyMagicBytesAndHash(file);
-    const nextAttachments = sar.attachments.map((slot) => {
-      if (slot.slotId !== slotId) return slot;
-      const nextVersion = slot.files.length + 1;
-      const newFile: AttachmentFile = {
-        id: `att-${Date.now()}`,
-        slotId,
-        filename: file.name.slice(0, 120),
-        sanitizedName: file.name
-          .replace(/[^a-zA-Z0-9._-]/g, '_')
-          .replace(/\.{2,}/g, '_')
-          .slice(0, 100),
-        mimeType: file.type || 'application/octet-stream',
-        sizeBytes: file.size,
-        sha256,
-        magicBytesStatus,
-        scanStatus: magicBytesStatus === 'mismatch_quarantined' ? 'quarantined' : 'clean',
-        version: nextVersion,
-        uploadedBy: currentPersona.name,
-        uploadedAt: new Date().toISOString(),
-      };
-      return {
-        ...slot,
-        files: [newFile, ...slot.files],
-      };
+    const mapKey = `${questionId}_FOLLOWUPS`;
+    const existingRaw = sar.answers[mapKey]?.value;
+    const existing =
+      existingRaw && typeof existingRaw === 'object' && !Array.isArray(existingRaw)
+        ? (existingRaw as Record<string, 'yes' | 'no'>)
+        : {};
+    onAnswerQuestion(mapKey, {
+      ...existing,
+      [followUpId]: val,
     });
-
-    onUpdateAttachments(nextAttachments);
-    e.target.value = '';
   };
 
-  const handleSimulateQuarantinedFile = (slotId: AttachmentSlotState['slotId']) => {
-    const nextAttachments = sar.attachments.map((slot) => {
-      if (slot.slotId !== slotId) return slot;
-      const newFile: AttachmentFile = {
-        id: `att-quar-${Date.now()}`,
-        slotId,
-        filename: 'renamed_exe_payload.pdf',
-        sanitizedName: 'renamed_exe_payload.pdf',
-        mimeType: 'application/x-msdownload',
-        sizeBytes: 412800,
-        sha256: 'deadbeef00112233445566778899aabbccddeeff00112233445566778899aabb',
-        magicBytesStatus: 'mismatch_quarantined',
-        scanStatus: 'quarantined',
-        version: slot.files.length + 1,
-        uploadedBy: currentPersona.name,
-        uploadedAt: new Date().toISOString(),
-      };
-      return { ...slot, files: [newFile, ...slot.files] };
+  const handleToggleThreadConfirm = (
+    questionId: string,
+    userTypeId: string,
+    val: 'yes' | 'no'
+  ) => {
+    const mapKey = `${questionId}_THREADS`;
+    const existingRaw = sar.answers[mapKey]?.value;
+    const existing =
+      existingRaw && typeof existingRaw === 'object' && !Array.isArray(existingRaw)
+        ? (existingRaw as Record<string, 'yes' | 'no'>)
+        : {};
+    onAnswerQuestion(mapKey, {
+      ...existing,
+      [userTypeId]: val,
     });
-    onUpdateAttachments(nextAttachments);
   };
 
-  const modIndex = checklistModules.findIndex((m) => m.code === currentModInfo?.code);
-  const prevMod = modIndex > 0 ? checklistModules[modIndex - 1] : null;
-  const nextMod = modIndex < checklistModules.length - 1 ? checklistModules[modIndex + 1] : null;
+  const renderPrimaryControl = (q: QuestionDefinition) => {
+    const ans = sar.answers[q.id];
+    const currentVal = ans?.value;
 
-  return (
-    <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-4 sm:py-5">
-      {/* MOBILE & TABLET HORIZONTAL MODULE STRIP (< lg) */}
-      <div className="lg:hidden mb-4">
-        <div className="rounded-2xl border border-zinc-200/90 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-2.5 shadow-2xs">
-          <div className="flex items-center justify-between px-1 mb-2 text-[11px] font-mono text-zinc-500 dark:text-zinc-400">
-            <button
-              type="button"
-              onClick={onBackToPreliminary}
-              className="font-semibold text-zinc-900 dark:text-zinc-200 hover:underline cursor-pointer"
-            >
-              ← Preliminary Discovery
-            </button>
-            <span>Checklist Sections ({checklistModules.length})</span>
-          </div>
-          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
-            {checklistModules.map((mod) => {
-              const prog = moduleProgressMap.get(mod.code) || { total: 0, answered: 0 };
-              const isComplete =
-                mod.code === 'M17'
-                  ? sar.attachments.some((s) => s.files.length > 0)
-                  : prog.total > 0 && prog.answered === prog.total;
-              const isSelected = currentModInfo?.code === mod.code;
-
-              return (
-                <button
-                  key={mod.code}
-                  type="button"
-                  onClick={() => onSelectModule(mod.code)}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs whitespace-nowrap shrink-0 cursor-pointer ${
+    // 1. Single Select / Yes-No with explicit options (Option labels only, no sub-points)
+    if (
+      (q.answerType === 'single_select' ||
+        q.answerType === 'yes_no' ||
+        q.answerType === 'yes_no_not_sure') &&
+      q.options &&
+      q.options.length > 0
+    ) {
+      return (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mt-3">
+          {q.options.map((opt) => {
+            const isSelected = currentVal === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => onAnswerQuestion(q.id, opt.id)}
+                className={`sar-glass-option px-3.5 py-3 rounded-xl border text-left transition-all flex items-center justify-between gap-3 cursor-pointer ${
+                  isSelected
+                    ? 'border-zinc-950 ring-1 ring-zinc-950 bg-zinc-950/[0.04] dark:border-white dark:ring-white dark:bg-zinc-800/90'
+                    : 'border-zinc-200/90 dark:border-zinc-800 hover:border-zinc-400 dark:hover:border-zinc-700'
+                }`}
+              >
+                <span className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 leading-snug">
+                  {opt.label}
+                </span>
+                <div
+                  className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 border ${
                     isSelected
-                      ? 'bg-zinc-950 text-white dark:bg-zinc-100 dark:text-zinc-900 font-semibold shadow-2xs'
-                      : 'bg-zinc-100/80 dark:bg-zinc-800/80 text-zinc-700 dark:text-zinc-300'
+                      ? 'border-zinc-950 bg-zinc-950 text-white dark:border-white dark:bg-white dark:text-zinc-950'
+                      : 'border-zinc-300 dark:border-zinc-600'
                   }`}
                 >
-                  {isComplete && (
-                    <Check
-                      className={`w-3 h-3 shrink-0 ${
-                        isSelected ? 'text-white dark:text-zinc-900' : 'text-emerald-600'
-                      }`}
-                    />
-                  )}
-                  <span>{mod.shortTitle}</span>
-                  {mod.code !== 'M17' && (
-                    <span className="font-mono text-[10px] opacity-75">
-                      ({prog.answered}/{prog.total})
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+                  {isSelected && <CheckCircle2 className="w-3 h-3" />}
+                </div>
+              </button>
+            );
+          })}
         </div>
-      </div>
+      );
+    }
 
-      <div id="sec-mod-origin" className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* LEFT NAVIGATION RAIL: Unlocked Modules (Desktop lg+) */}
-        <aside className="hidden lg:block lg:col-span-3 rounded-2xl border border-zinc-200/90 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 lg:sticky lg:top-20 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
-          <div className="flex items-center justify-between px-2 mb-3">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
-              Checklist Sections ({checklistModules.length})
-            </span>
-            <button
-              type="button"
-              onClick={onBackToPreliminary}
-              className="text-[11px] font-semibold text-zinc-950 dark:text-zinc-200 hover:underline cursor-pointer"
-            >
-              ← Discovery
-            </button>
-          </div>
+    // 2. Multi-Select (Option labels only, no sub-points)
+    if (q.answerType === 'multi_select' && q.options) {
+      const selectedArr: string[] = Array.isArray(currentVal)
+        ? (currentVal as string[])
+        : typeof currentVal === 'string' && currentVal
+        ? [currentVal]
+        : [];
 
-          <nav className="space-y-1.5 max-h-[65vh] overflow-y-auto pr-1">
-            {checklistModules.map((mod) => {
-              const prog = moduleProgressMap.get(mod.code) || { total: 0, answered: 0 };
-              const isComplete =
-                mod.code === 'M17'
-                  ? sar.attachments.some((s) => s.files.length > 0)
-                  : prog.total > 0 && prog.answered === prog.total;
-              const isSelected = currentModInfo?.code === mod.code;
+      const toggleOption = (optId: string, exclusive?: boolean) => {
+        if (exclusive || optId === 'none') {
+          onAnswerQuestion(q.id, [optId]);
+          return;
+        }
+        const exclusiveIds = new Set(
+          q.options?.filter((o) => o.exclusive || o.id === 'none').map((o) => o.id) || []
+        );
+        const filtered = selectedArr.filter((id) => !exclusiveIds.has(id));
+        const exists = filtered.includes(optId);
+        const next = exists ? filtered.filter((id) => id !== optId) : [...filtered, optId];
+        onAnswerQuestion(q.id, next);
+      };
 
-              return (
-                <button
-                  key={mod.code}
-                  type="button"
-                  onClick={() => onSelectModule(mod.code)}
-                  className={`w-full text-left px-3.5 py-2.5 rounded-xl border transition-all flex items-center justify-between gap-2 cursor-pointer ${
+      return (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mt-3">
+          {q.options.map((opt) => {
+            const isSelected = selectedArr.includes(opt.id);
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => toggleOption(opt.id, opt.exclusive)}
+                className={`sar-glass-option px-3.5 py-3 rounded-xl border text-left transition-all flex items-center justify-between gap-3 cursor-pointer ${
+                  isSelected
+                    ? 'border-zinc-950 ring-1 ring-zinc-950 bg-zinc-950/[0.04] dark:border-white dark:ring-white dark:bg-zinc-800/90'
+                    : 'border-zinc-200/90 dark:border-zinc-800 hover:border-zinc-400 dark:hover:border-zinc-700'
+                }`}
+              >
+                <span className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 leading-snug">
+                  {opt.label}
+                </span>
+                <div
+                  className={`w-4 h-4 rounded-md flex items-center justify-center shrink-0 border ${
                     isSelected
-                      ? 'bg-zinc-950 text-white border-zinc-950 dark:bg-zinc-100 dark:text-zinc-900 dark:border-zinc-100 font-semibold shadow-xs'
-                      : 'border-transparent text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100/80 dark:hover:bg-zinc-800/60 hover:border-zinc-200 dark:hover:border-zinc-700'
+                      ? 'border-zinc-950 bg-zinc-950 text-white dark:border-white dark:bg-white dark:text-zinc-950'
+                      : 'border-zinc-300 dark:border-zinc-600'
                   }`}
                 >
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium truncate">
-                      {mod.shortTitle}
-                    </div>
-                    {sar.delegations?.[mod.code] && (
-                      <div
-                        className={`text-[10px] truncate ${
-                          isSelected
-                            ? 'text-emerald-300 dark:text-emerald-700'
-                            : 'text-emerald-600 dark:text-emerald-400'
-                        }`}
-                      >
-                        Delegated: {sar.delegations[mod.code].assigneeName}
-                      </div>
-                    )}
-                  </div>
-                  <span
-                    className={`font-mono text-[11px] shrink-0 tabular-nums px-1.5 py-0.5 rounded-full ${
-                      isSelected
-                        ? 'bg-white/15 text-white dark:bg-zinc-900/15 dark:text-zinc-900 font-semibold'
-                        : isComplete
-                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400 font-semibold'
-                        : 'text-zinc-400'
-                    }`}
-                  >
-                    {mod.code === 'M17'
-                      ? isComplete
-                        ? 'Done'
-                        : 'Open'
-                      : `${prog.answered}/${prog.total}`}
-                  </span>
-                </button>
-              );
-            })}
-          </nav>
+                  {isSelected && <CheckCircle2 className="w-3 h-3" />}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      );
+    }
 
-          <div className="pt-3 mt-3 border-t border-zinc-100 dark:border-zinc-800 space-y-1.5">
-            <button
-              type="button"
-              onClick={tryProceedToReview}
-              className={`w-full py-2.5 px-3.5 rounded-full text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer transition-all ${
-                flowGates.modulesComplete || isReadOnly
-                  ? 'bg-zinc-950 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white dark:text-zinc-900 text-white shadow-xs'
-                  : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500'
+    // 3. Default Yes/No Verification Buttons for Detailed Checklist Controls
+    const chainCfg = getDetailedQuestionChainConfig(
+      q.id,
+      q.text,
+      q.moduleId,
+      q.showOnlyIfText
+    );
+    const isYesSelected =
+      currentVal === 'yes' ||
+      currentVal === true ||
+      (typeof currentVal === 'string' &&
+        currentVal.length > 0 &&
+        currentVal !== 'no' &&
+        currentVal !== 'not_applicable');
+    const isNoSelected = currentVal === 'no' || currentVal === false;
+
+    return (
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mt-3">
+        {[
+          {
+            key: 'yes',
+            label: chainCfg.yesLabel,
+            selected: isYesSelected,
+          },
+          {
+            key: 'no',
+            label: chainCfg.noLabel,
+            selected: isNoSelected,
+          },
+        ].map((opt) => (
+          <button
+            key={opt.key}
+            type="button"
+            onClick={() => onAnswerQuestion(q.id, opt.key)}
+            className={`sar-glass-option px-3.5 py-3 rounded-xl border text-left transition-all flex items-center justify-between gap-3 cursor-pointer ${
+              opt.selected
+                ? 'border-zinc-950 ring-1 ring-zinc-950 bg-zinc-950/[0.04] dark:border-white dark:ring-white dark:bg-zinc-800/90'
+                : 'border-zinc-200/90 dark:border-zinc-800 hover:border-zinc-400 dark:hover:border-zinc-700'
+            }`}
+          >
+            <span className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 leading-snug">
+              {opt.label}
+            </span>
+            <div
+              className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 border ${
+                opt.selected
+                  ? 'border-zinc-950 bg-zinc-950 text-white dark:border-white dark:bg-white dark:text-zinc-950'
+                  : 'border-zinc-300 dark:border-zinc-600'
               }`}
             >
-              {!flowGates.modulesComplete && !isReadOnly && <Lock className="w-3.5 h-3.5" />}
-              <span>Review &amp; Submit SAR</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </aside>
-
-        {/* MAIN MODULE WORKSPACE */}
-        <main className="lg:col-span-9">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={currentModInfo?.code || 'M1'}
-              initial={{ opacity: 0, y: 5 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -3 }}
-              transition={{ duration: 0.12, ease: [0.2, 0, 0, 1] }}
-              style={{ willChange: 'opacity, transform' }}
-              className="space-y-6"
-            >
-          {moduleGateError && (
-            <div className="px-4 py-2.5 rounded-xl border border-amber-200 dark:border-amber-800/70 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 text-xs flex items-center justify-between gap-3 shadow-2xs">
-              <div className="flex items-center gap-2 font-medium">
-                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
-                <span>{moduleGateError}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setModuleGateError(null)}
-                className="p-1 text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-white cursor-pointer"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
+              {opt.selected && <CheckCircle2 className="w-3 h-3" />}
             </div>
-          )}
+          </button>
+        ))}
+      </div>
+    );
+  };
 
-          {/* Module Header */}
-          <div id="sec-mod-controls" className="p-5 sm:p-6 rounded-2xl border border-zinc-200/90 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono text-zinc-600 dark:text-zinc-400 mb-2">
-              <span className="px-2.5 py-0.5 rounded-full bg-zinc-950 text-white dark:bg-zinc-100 dark:text-zinc-900 text-[11px] font-semibold">
-                Section {modIndex + 1} of {checklistModules.length}
-              </span>
-              {!flowGates.modulesComplete && !isReadOnly && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nextMissing = flowGates.missingDetailedQuestions[0];
-                    if (nextMissing) {
-                      if (nextMissing.moduleId !== currentModInfo?.code) {
-                        onSelectModule(nextMissing.moduleId);
-                      }
-                      setQuestionFilter('all');
-                      scrollToMissingQuestion(nextMissing.code);
-                    }
-                  }}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-zinc-950 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 text-white text-[11px] font-semibold cursor-pointer whitespace-nowrap shrink-0"
-                >
-                  <span>
-                    Next Required Control ({flowGates.missingDetailedQuestions.length} left):{' '}
-                    {definition.modules.find((m) => m.code === flowGates.missingDetailedQuestions[0]?.moduleId)?.shortTitle || 'Checklist'}
-                  </span>
-                  <ArrowRight className="w-3 h-3" />
-                </button>
-              )}
+  const renderChainedFollowUps = (q: QuestionDefinition) => {
+    const ans = sar.answers[q.id];
+    if (!isQuestionAnswered(ans)) return null;
+
+    const chainCfg = getDetailedQuestionChainConfig(
+      q.id,
+      q.text,
+      q.moduleId,
+      q.showOnlyIfText
+    );
+
+    const val = ans?.value;
+    const isNegative =
+      val === 'no' ||
+      val === false ||
+      val === 'not_sure' ||
+      val === 'none' ||
+      (Array.isArray(val) && val.includes('none'));
+
+    const followUpsToShow = isNegative ? chainCfg.noFollowUps : chainCfg.yesFollowUps;
+    const followUpRaw = sar.answers[`${q.id}_FOLLOWUPS`]?.value;
+    const followUpMap: Record<string, 'yes' | 'no'> =
+      followUpRaw && typeof followUpRaw === 'object' && !Array.isArray(followUpRaw)
+        ? (followUpRaw as Record<string, 'yes' | 'no'>)
+        : {};
+
+    const threadConfirmRaw = sar.answers[`${q.id}_THREADS`]?.value;
+    const threadConfirmMap: Record<string, 'yes' | 'no'> =
+      threadConfirmRaw &&
+      typeof threadConfirmRaw === 'object' &&
+      !Array.isArray(threadConfirmRaw)
+        ? (threadConfirmRaw as Record<string, 'yes' | 'no'>)
+        : {};
+
+    const showUserThreads =
+      Boolean(chainCfg.supportsUserPlatformThreads) && activeUserTypes.length >= 2;
+
+    if (followUpsToShow.length === 0 && !showUserThreads) return null;
+
+    const count = activeUserTypes.length;
+    const threadGridClass =
+      count === 2
+        ? 'grid-cols-1 md:grid-cols-2'
+        : count === 3
+        ? 'grid-cols-1 md:grid-cols-3'
+        : count === 4
+        ? 'grid-cols-1 md:grid-cols-2 xl:grid-cols-4'
+        : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5';
+
+    return (
+      <div className="mt-4 pt-4 border-t border-zinc-200/80 dark:border-zinc-800 space-y-4">
+        {/* 1. Simple Guided Follow-Up Questions (Yes / No — Option titles only) */}
+        {followUpsToShow.length > 0 && (
+          <div className="space-y-2.5">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+              <CornerDownRight className="w-3.5 h-3.5 shrink-0" />
+              <span>Follow-Up Questions (Yes / No)</span>
             </div>
-            <h1 className="font-display text-2xl font-bold text-zinc-950 dark:text-white tracking-tight">
-              {currentModInfo?.title}
-            </h1>
-            <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
-              {currentModDef?.description}
-            </p>
-          </div>
 
-          {/* MODULE M17: SUPPORTING DOCUMENTS & ATTACHMENTS */}
-          {currentModInfo?.code === 'M17' ? (
-            <div className="space-y-4">
-              {uploadError && (
-                <div className="p-4 rounded-xl border border-rose-300 bg-rose-50 dark:bg-rose-950/40 text-xs text-rose-800 dark:text-rose-200 flex items-center gap-2">
-                  <ShieldAlert className="w-4 h-4 shrink-0" />
-                  <span>{uploadError}</span>
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                {sar.attachments.map((slot) => (
-                  <div
-                    key={slot.slotId}
-                    className="p-6 rounded-2xl border border-zinc-200/90 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex flex-col justify-between shadow-[0_2px_10px_rgba(0,0,0,0.02)]"
-                  >
-                    <div>
-                      <div className="flex items-center justify-between gap-2 mb-1">
-                        <h3 className="font-display font-bold text-base text-zinc-950 dark:text-white">
-                          {slot.title}
-                        </h3>
-                        <span className="font-mono text-xs text-zinc-400">
-                          {slot.files.length} version(s)
-                        </span>
-                      </div>
-                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-4">
-                        {slot.description}
-                      </p>
-
-                      {/* Uploaded file version list */}
-                      {slot.files.length > 0 && (
-                        <div className="space-y-2 mb-4">
-                          {slot.files.map((f) => (
-                            <div
-                              key={f.id}
-                              className={`p-3 rounded-xl border text-xs ${
-                                f.scanStatus === 'quarantined'
-                                  ? 'border-rose-300 bg-rose-50/70 dark:bg-rose-950/30 text-rose-900 dark:text-rose-200'
-                                  : 'border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-800/60'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between gap-2 font-semibold">
-                                <span className="truncate">{f.sanitizedName}</span>
-                                <span className="font-mono text-[11px] shrink-0">v{f.version}</span>
-                              </div>
-                              <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500 dark:text-zinc-400 mt-1 font-mono">
-                                <span>{(f.sizeBytes / 1024).toFixed(1)} KB</span>
-                                <span>·</span>
-                                {f.scanStatus === 'quarantined' ? (
-                                  <span className="inline-flex items-center gap-1 text-rose-600 font-semibold">
-                                    <FileWarning className="w-3.5 h-3.5" />
-                                    <span>Blocked File Format</span>
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400 font-semibold">
-                                    <FileCheck className="w-3.5 h-3.5" />
-                                    <span>Verified</span>
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {!isReadOnly && (
-                      <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-zinc-100 dark:border-zinc-800">
-                        <label className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-zinc-950 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 text-white text-xs font-semibold cursor-pointer">
-                          <Upload className="w-3.5 h-3.5" />
-                          <span>
-                            {slot.files.length > 0 ? 'Upload New Version' : 'Upload Document'}
-                          </span>
-                          <input
-                            type="file"
-                            accept=".pdf,.png,.jpg,.jpeg,.docx,.xlsx,.vsdx,.drawio,.xml"
-                            onChange={(e) => handleFileUpload(slot.slotId, e)}
-                            className="hidden"
-                          />
-                        </label>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            /* DETAILED MODULE QUESTIONS (M1–M16) */
-            <div className="space-y-6">
-              {/* Question Filter Toolbar */}
-              {visibleModuleQuestions.length > 0 && (
-                <div className="p-3.5 rounded-2xl border border-zinc-200/90 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex flex-wrap items-center justify-between gap-3 text-xs shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
-                  <div className="text-zinc-600 dark:text-zinc-300 font-mono">
-                    Showing <strong>{moduleQuestions.length}</strong> of{' '}
-                    <strong>{visibleModuleQuestions.length}</strong> question(s) in {currentModInfo?.title}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {(
-                      [
-                        { id: 'all', label: `All (${visibleModuleQuestions.length})` },
-                        {
-                          id: 'mandatory',
-                          label: `Mandatory (${
-                            visibleModuleQuestions.filter(
-                              (q) => requiredQIds.has(q.id) || hardRequiredQIds.has(q.id)
-                            ).length
-                          })`,
-                        },
-                        {
-                          id: 'unanswered',
-                          label: `Unanswered (${
-                            visibleModuleQuestions.filter((q) => {
-                              const v = sar.answers[q.id]?.value;
-                              return (
-                                v === undefined ||
-                                v === null ||
-                                v === '' ||
-                                (Array.isArray(v) && v.length === 0)
-                              );
-                            }).length
-                          })`,
-                        },
-                      ] as const
-                    ).map((tab) => (
-                      <button
-                        key={tab.id}
-                        type="button"
-                        onClick={() => setQuestionFilter(tab.id)}
-                        className={`px-3 py-1 rounded-full font-semibold transition-colors cursor-pointer ${
-                          questionFilter === tab.id
-                            ? 'bg-zinc-950 text-white dark:bg-zinc-100 dark:text-zinc-900'
-                            : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200'
-                        }`}
-                      >
-                        {tab.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {moduleQuestions.length === 0 && visibleModuleQuestions.length > 0 && (
-                <div className="p-6 rounded-2xl border border-zinc-200/90 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-center space-y-3 shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
-                  <div className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300">
-                    <Check className="w-4 h-4" />
-                  </div>
-                  <div className="space-y-1">
-                    <h3 className="font-display font-bold text-sm text-zinc-950 dark:text-white">
-                      {questionFilter === 'unanswered'
-                        ? `All ${visibleModuleQuestions.length} question(s) in ${currentModInfo?.shortTitle} are answered!`
-                        : `No matching questions for "${questionFilter}" filter in this section.`}
-                    </h3>
-                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                      Switch back to All Questions to review or edit your responses, or continue to the next section.
-                    </p>
-                  </div>
-                  <div className="flex items-center justify-center gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => setQuestionFilter('all')}
-                      className="px-4 py-1.5 rounded-full bg-zinc-950 text-white dark:bg-zinc-100 dark:text-zinc-900 text-xs font-semibold cursor-pointer"
-                    >
-                      Show All Questions ({visibleModuleQuestions.length})
-                    </button>
-                    {nextMod && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setQuestionFilter('all');
-                          onSelectModule(nextMod.code);
-                        }}
-                        className="inline-flex items-center gap-1 px-4 py-1.5 rounded-full border border-zinc-300 dark:border-zinc-700 text-xs font-semibold text-zinc-800 dark:text-zinc-200 hover:border-zinc-950 cursor-pointer"
-                      >
-                        <span>Next: {nextMod.shortTitle}</span>
-                        <ArrowRight className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {moduleQuestions.map((q, qIdx) => {
-                const ans = sar.answers[q.id];
-                const rawVal = ans?.value;
-                const filteredOptions = filterOptionsByHosting(q);
-                const isHardReq = hardRequiredQIds.has(q.id);
-                const isReq = requiredQIds.has(q.id);
-                const isHelpOpen = activeHelpQId === q.id;
-
+            <div className="grid grid-cols-1 gap-2.5">
+              {followUpsToShow.map((subQ, subIdx) => {
+                const chosen = followUpMap[subQ.id] || (isNegative ? 'no' : 'yes');
                 return (
                   <div
-                    key={q.id}
-                    id={`question-${q.id}`}
-                    data-question-code={q.code}
-                    className="sar-glass-card p-5 sm:p-6 rounded-2xl border border-zinc-200/90 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-[0_2px_10px_rgba(0,0,0,0.02)] relative"
+                    key={subQ.id}
+                    className="rounded-xl border border-zinc-200/90 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-900/60 px-3.5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                   >
-                    <div className="flex items-center justify-between gap-2 mb-2 text-xs text-zinc-500 dark:text-zinc-400">
-                      <div className="flex items-center gap-2">
-                        <span className="px-2 py-0.5 rounded-md bg-zinc-950 text-white dark:bg-zinc-100 dark:text-zinc-900 font-mono text-[11px] font-bold">
-                          {q.code} · Question {qIdx + 1}
-                        </span>
-                        <span>
-                          {q.answerType === 'multi_select'
-                            ? 'Select all that apply'
-                            : q.answerType === 'long_text'
-                            ? 'Free-text response'
-                            : 'Select one option'}
-                        </span>
-                      </div>
-                      {Boolean(
-                        typeof rawVal === 'string'
-                          ? rawVal.trim().length > 0
-                          : Array.isArray(rawVal) && rawVal.length > 0
-                      ) && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 font-semibold text-[11px]">
-                          <Check className="w-3 h-3" />
-                          <span>Recorded</span>
-                        </span>
-                      )}
+                    <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 leading-snug">
+                      {subIdx + 1}. {subQ.prompt}
                     </div>
 
-                    {/* Question Title + Red Asterisk + Floating Small Info Icon Tooltip */}
-                    <div className="flex items-start justify-between gap-3 mb-2 relative">
-                      <div className="space-y-1">
-                        <h2 className="font-display text-base sm:text-lg font-bold text-zinc-950 dark:text-white leading-snug">
-                          {q.text}
-                          {(isHardReq || isReq) && (
-                            <span className="text-red-500 ml-1" aria-label="Required">
-                              *
-                            </span>
-                          )}
-                        </h2>
-                        {q.hint && (
-                          <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed">
-                            {q.hint}
-                          </p>
-                        )}
-                      </div>
-
-                      <div
-                        className="relative shrink-0"
-                        onMouseEnter={() => setActiveHelpQId(q.id)}
-                        onMouseLeave={() =>
-                          setActiveHelpQId((prev) => (prev === q.id ? null : prev))
-                        }
-                      >
-                        <button
-                          type="button"
-                          aria-label="Help and guidance for this question"
-                          aria-expanded={isHelpOpen}
-                          onClick={() =>
-                            setActiveHelpQId((prev) => (prev === q.id ? null : q.id))
-                          }
-                          className={`w-7 h-7 rounded-full flex items-center justify-center border transition-colors cursor-pointer ${
-                            isHelpOpen
-                              ? 'bg-zinc-950 text-white border-zinc-950 dark:bg-zinc-100 dark:text-zinc-900 dark:border-zinc-100'
-                              : 'bg-zinc-100/90 text-zinc-600 border-zinc-200/90 hover:bg-zinc-200/80 hover:text-zinc-950 dark:bg-zinc-800/90 dark:text-zinc-300 dark:border-zinc-700 dark:hover:text-white'
-                          }`}
-                        >
-                          <Info className="w-3.5 h-3.5" />
-                        </button>
-
-                        <AnimatePresence>
-                          {isHelpOpen && (
-                            <motion.div
-                              initial={{ opacity: 0, y: 4, scale: 0.98 }}
-                              animate={{ opacity: 1, y: 0, scale: 1 }}
-                              exit={{ opacity: 0, y: 4, scale: 0.98 }}
-                              transition={{ duration: 0.14 }}
-                              role="tooltip"
-                              className="absolute right-0 top-9 z-30 w-72 sm:w-80 p-3.5 rounded-xl bg-zinc-950 text-white dark:bg-zinc-900 dark:text-zinc-100 border border-zinc-800 dark:border-zinc-700 shadow-xl text-xs space-y-2"
-                            >
-                              <div>
-                                <div className="font-semibold text-zinc-300 dark:text-zinc-400 text-[11px] uppercase tracking-wider mb-0.5">
-                                  Why we ask
-                                </div>
-                                <p className="text-zinc-100 dark:text-zinc-200 leading-relaxed">
-                                  {q.whyWeAsk}
-                                </p>
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </div>
+                    <div className="grid grid-cols-2 sm:flex items-center gap-2 shrink-0">
+                      {(['yes', 'no'] as const).map((yn) => {
+                        const active = chosen === yn;
+                        return (
+                          <button
+                            key={yn}
+                            type="button"
+                            onClick={() => handleToggleFollowUpYesNo(q.id, subQ.id, yn)}
+                            className={`px-3.5 py-1.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
+                              active
+                                ? 'border-zinc-950 bg-zinc-950 text-white dark:border-white dark:bg-white dark:text-zinc-950'
+                                : 'border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-400 hover:border-zinc-400 dark:hover:border-zinc-700'
+                            }`}
+                          >
+                            {yn === 'yes' ? 'Yes' : 'No'}
+                          </button>
+                        );
+                      })}
                     </div>
-
-                    {/* Free-Text Input Box or Option Selector */}
-                    {q.answerType === 'long_text' ? (
-                      <div className="space-y-2.5 mt-3">
-                        <textarea
-                          rows={3}
-                          disabled={isReadOnly}
-                          value={
-                            typeof rawVal === 'string'
-                              ? q.options?.find((o) => o.id === rawVal)?.label || rawVal
-                              : ''
-                          }
-                          onChange={(e) =>
-                            onAnswerQuestion(q.id, e.target.value, { comment: ans?.comment })
-                          }
-                          placeholder={
-                            q.hint ||
-                            'Type your response here in plain words...'
-                          }
-                          className="w-full px-3.5 py-2.5 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/60 dark:bg-zinc-950 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:bg-white dark:focus:bg-zinc-900 focus:border-zinc-950 dark:focus:border-zinc-300 transition-colors leading-relaxed"
-                        />
-                      </div>
-                    ) : q.answerType === 'multi_select' ? (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {filteredOptions.map((opt) => {
-                          const selectedArr = Array.isArray(rawVal)
-                            ? rawVal.map(String)
-                            : typeof rawVal === 'string' && rawVal
-                            ? [rawVal]
-                            : [];
-                          const isSelected = selectedArr.includes(opt.id);
-                          const toggleMultiOpt = () => {
-                            if (opt.exclusive) {
-                              onAnswerQuestion(
-                                q.id,
-                                isSelected ? [] : [opt.id],
-                                { comment: ans?.comment }
-                              );
-                              return;
-                            }
-                            const exclusiveIds = new Set(
-                              filteredOptions.filter((o) => o.exclusive).map((o) => o.id)
-                            );
-                            const cleaned = selectedArr.filter((id) => !exclusiveIds.has(id));
-                            const next = isSelected
-                              ? cleaned.filter((id) => id !== opt.id)
-                              : [...cleaned, opt.id];
-                            onAnswerQuestion(q.id, next, { comment: ans?.comment });
-                          };
-                          return (
-                            <button
-                              key={opt.id}
-                              type="button"
-                              disabled={isReadOnly}
-                              onClick={toggleMultiOpt}
-                              className={`sar-glass-option text-left px-3.5 py-2.5 rounded-xl border transition-all flex items-center justify-between gap-2.5 cursor-pointer ${
-                                isSelected
-                                  ? 'border-zinc-950 ring-1 ring-zinc-950 bg-zinc-950/[0.04] dark:bg-zinc-800/90 dark:border-zinc-200 dark:ring-zinc-200'
-                                  : 'border-zinc-200 dark:border-zinc-800 hover:border-zinc-400 dark:hover:border-zinc-600 bg-white/85 dark:bg-zinc-900/60'
-                              }`}
-                            >
-                              <span className="font-display font-medium text-sm text-zinc-950 dark:text-white leading-snug">
-                                {opt.label}
-                              </span>
-                              <span
-                                className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 transition-colors ${
-                                  isSelected
-                                    ? 'bg-zinc-950 text-white dark:bg-zinc-100 dark:text-zinc-900'
-                                    : 'border border-zinc-300 dark:border-zinc-700 text-transparent'
-                                }`}
-                              >
-                                <Check className="w-3 h-3" />
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 gap-2">
-                        {filteredOptions.map((opt) => {
-                          const isSelected = rawVal === opt.id;
-                          return (
-                            <button
-                              key={opt.id}
-                              type="button"
-                              disabled={isReadOnly}
-                              onClick={() =>
-                                onAnswerQuestion(q.id, opt.id, { comment: ans?.comment })
-                              }
-                              className={`sar-glass-option text-left px-3.5 py-2.5 rounded-xl border transition-all flex items-center justify-between gap-2.5 cursor-pointer ${
-                                isSelected
-                                  ? 'border-zinc-950 ring-1 ring-zinc-950 bg-zinc-950/[0.04] dark:bg-zinc-800/90 dark:border-zinc-200 dark:ring-zinc-200'
-                                  : 'border-zinc-200 dark:border-zinc-800 hover:border-zinc-400 dark:hover:border-zinc-600 bg-white/85 dark:bg-zinc-900/60'
-                              }`}
-                            >
-                              <span className="font-display font-medium text-sm text-zinc-950 dark:text-white leading-snug">
-                                {opt.label}
-                              </span>
-                              <span
-                                className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 transition-colors ${
-                                  isSelected
-                                    ? 'bg-zinc-950 text-white dark:bg-zinc-100 dark:text-zinc-900'
-                                    : 'border border-zinc-300 dark:border-zinc-700 text-transparent'
-                                }`}
-                              >
-                                <Check className="w-3 h-3" />
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    {/* Optional Additional Comments / Implementation Details */}
-                    {q.answerType !== 'long_text' && (
-                      <div className="mt-3.5 pt-3 border-t border-zinc-100 dark:border-zinc-800/80">
-                        <label className="block text-[11px] font-mono font-semibold text-zinc-500 dark:text-zinc-400 mb-1">
-                          Additional Comments / Implementation Details (Optional)
-                        </label>
-                        <input
-                          type="text"
-                          disabled={isReadOnly}
-                          value={ans?.comment || ''}
-                          onChange={(e) =>
-                            onAnswerQuestion(q.id, rawVal, { comment: e.target.value })
-                          }
-                          placeholder="Add specific architecture notes, tool names, or implementation details..."
-                          className="w-full px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/60 text-xs text-zinc-800 dark:text-zinc-200 focus:outline-none focus:border-zinc-950 dark:focus:border-zinc-400 transition-colors"
-                        />
-                      </div>
-                    )}
                   </div>
                 );
               })}
+            </div>
+          </div>
+        )}
 
-              {/* Embedded Repeater Table Editors in M5, M12 */}
+        {/* 2. Clear Side-by-Side User × Platform Confirmation */}
+        {showUserThreads && (
+          <div className="space-y-2.5 pt-1">
+            <div>
+              <div className="flex items-center gap-1.5 text-xs font-mono uppercase tracking-wider font-bold text-zinc-800 dark:text-zinc-200">
+                <Layers className="w-3.5 h-3.5 shrink-0" />
+                <span>SIDE-BY-SIDE USER × PLATFORM THREADS ({count})</span>
+              </div>
+              <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">
+                Confirm whether this security control is enabled for each user type below:
+              </p>
+            </div>
 
-              {currentModInfo?.code === 'M12' && (
-                <RepeaterTableEditors
-                  tableType="firewall_rules"
-                  tables={sar.tables}
-                  internetFacing={Boolean(evalRes?.flags.internet_facing)}
-                  isReadOnly={isReadOnly}
-                  onUpdateTables={onUpdateTables}
-                />
-              )}
+            <div className={`grid gap-3.5 ${threadGridClass}`}>
+              {activeUserTypes.map((uMeta, tIdx) => {
+                const row = threadMatrix[uMeta.userTypeId] || uMeta.defaultValues;
+                const chosen = threadConfirmMap[uMeta.userTypeId] || 'yes';
+                const platformShort = getThreadShortLabel('platform', row.platform);
 
-              {currentModInfo?.code === 'M5' && (
-                <div className="space-y-6">
-                  <RepeaterTableEditors
-                    tableType="api_endpoints"
-                    tables={sar.tables}
-                    internetFacing={Boolean(evalRes?.flags.internet_facing)}
-                    isReadOnly={isReadOnly}
-                    onUpdateTables={onUpdateTables}
-                  />
-                  <RepeaterTableEditors
-                    tableType="integrations"
-                    tables={sar.tables}
-                    internetFacing={Boolean(evalRes?.flags.internet_facing)}
-                    isReadOnly={isReadOnly}
-                    onUpdateTables={onUpdateTables}
-                  />
+                return (
+                  <div
+                    key={uMeta.userTypeId}
+                    className="rounded-2xl border border-zinc-200/90 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-900/50 p-3.5 flex flex-col justify-between gap-3"
+                  >
+                    <div>
+                      <div className="pb-2.5 border-b border-zinc-200/80 dark:border-zinc-800 flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-500 dark:text-zinc-400 font-semibold">
+                            THREAD {tIdx + 1} · {uMeta.shortLabel.toUpperCase()}
+                          </div>
+                          <div className="text-xs sm:text-sm font-bold text-zinc-950 dark:text-white mt-0.5 leading-snug">
+                            {uMeta.label}
+                          </div>
+                        </div>
+                        <CheckCircle2 className="w-4 h-4 text-zinc-900 dark:text-zinc-100 shrink-0 mt-0.5" />
+                      </div>
+
+                      <div className="mt-2.5 text-xs font-semibold text-zinc-800 dark:text-zinc-200 leading-snug">
+                        Is this control enabled for {uMeta.shortLabel} ({platformShort})?
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      {(['yes', 'no'] as const).map((yn) => {
+                        const active = chosen === yn;
+                        return (
+                          <button
+                            key={yn}
+                            type="button"
+                            onClick={() =>
+                              handleToggleThreadConfirm(q.id, uMeta.userTypeId, yn)
+                            }
+                            className={`px-2.5 py-2 rounded-xl border text-left transition-all flex items-center justify-between gap-1.5 cursor-pointer ${
+                              active
+                                ? 'border-zinc-950 ring-1 ring-zinc-950 bg-zinc-950/[0.04] dark:border-white dark:ring-white dark:bg-zinc-800 font-semibold text-zinc-950 dark:text-white'
+                                : 'border-zinc-200/90 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-300 hover:border-zinc-400 dark:hover:border-zinc-700'
+                            }`}
+                          >
+                            <span className="text-xs">{yn === 'yes' ? 'Yes' : 'No'}</span>
+                            <span
+                              className={`w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0 border ${
+                                active
+                                  ? 'border-zinc-950 bg-zinc-950 text-white dark:border-white dark:bg-white dark:text-zinc-950'
+                                  : 'border-zinc-300 dark:border-zinc-600'
+                              }`}
+                            >
+                              {active && <CheckCircle2 className="w-2.5 h-2.5" />}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const currentModuleAnsweredCount = useMemo(
+    () =>
+      currentModuleQuestions.filter((q) => isQuestionAnswered(sar.answers[q.id])).length,
+    [currentModuleQuestions, sar.answers]
+  );
+
+  const isExpandedForSideBySide = activeUserTypes.length >= 2;
+  const containerWidthClass =
+    activeUserTypes.length >= 4
+      ? 'max-w-[1440px]'
+      : isExpandedForSideBySide
+      ? 'max-w-7xl'
+      : 'max-w-5xl';
+
+  return (
+    <div className={`${containerWidthClass} mx-auto px-4 sm:px-6 xl:pl-14 py-6 transition-all`}>
+      {/* Phase 3 Header */}
+      <div
+        id="sec-mod-origin"
+        className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-200 dark:border-zinc-800 pb-4"
+      >
+        <div>
+          <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-widest text-zinc-500 dark:text-zinc-400 mb-1">
+            <CyberKickerTrace />
+            <span>PHASE 3 OF 5</span>
+            <span>•</span>
+            <span>DETAILED CHECKLIST</span>
+          </div>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-zinc-900 dark:text-white">
+            Security Checklist ({activeModules.length} Sections)
+          </h1>
+          <p className="text-xs sm:text-sm text-zinc-600 dark:text-zinc-400 mt-0.5">
+            Answer the simple Yes/No questions below for each section unlocked by your Preliminary Discovery.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-3 shrink-0 self-start sm:self-center">
+          <span className="text-xs font-mono font-semibold text-zinc-700 dark:text-zinc-300 px-3 py-1.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 tabular-nums">
+            {overallStats.answered}/{overallStats.total}
+          </span>
+          <button
+            type="button"
+            onClick={onProceedToReview}
+            className="sar-glass-primary-btn inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer"
+          >
+            <span>Architecture Flow</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Application Architecture Scope Bar — Distinguishes Primary Solution vs Connected Applications */}
+      <div className="mb-5 rounded-2xl border border-zinc-200/90 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-900/60 px-4 py-3 flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
+          <span className="px-2 py-0.5 rounded-md bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-950 text-[10px] font-mono font-bold uppercase tracking-wider shrink-0">
+            Primary Solution Under SAR
+          </span>
+          <span className="text-xs sm:text-sm font-bold text-zinc-950 dark:text-white truncate">
+            {primarySolutionName}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] font-mono uppercase tracking-wider text-zinc-500 dark:text-zinc-400 font-semibold mr-1">
+            Connected Systems ({connectedSystemNames.length}):
+          </span>
+          {connectedSystemNames.length > 0 ? (
+            connectedSystemNames.map((appName, idx) => (
+              <span
+                key={idx}
+                className="px-2 py-0.5 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-[11px] font-medium text-zinc-800 dark:text-zinc-200"
+              >
+                {appName}
+              </span>
+            ))
+          ) : (
+            <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+              Standalone (No external connected apps declared in Basics)
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Main Responsive Grid: Left Section Rail + Right Active Section Controls */}
+      <div id="sec-mod-controls" className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* Left Section Navigation Rail */}
+        <aside
+          className={`${
+            isExpandedForSideBySide ? 'lg:col-span-3 xl:col-span-2' : 'lg:col-span-3'
+          } lg:sticky lg:top-20 space-y-2`}
+        >
+          <div className="flex items-center justify-between px-1 mb-1">
+            <span className="text-[11px] font-mono uppercase tracking-wider text-zinc-500 dark:text-zinc-400 font-semibold">
+              Checklist Sections
+            </span>
+            <span className="text-[11px] font-mono text-zinc-500 dark:text-zinc-400 tabular-nums">
+              {currentModuleIndex + 1}/{activeModules.length}
+            </span>
+          </div>
+
+          <div className="flex lg:flex-col gap-2 overflow-x-auto lg:overflow-x-visible pb-2 lg:pb-0">
+            {activeModules.map((mod) => {
+              const qs = questionsByModuleMap[mod.code] || [];
+              const answered = qs.filter((q) => isQuestionAnswered(sar.answers[q.id])).length;
+              const isSelected = currentModule?.code === mod.code;
+              const isDone = qs.length > 0 && answered === qs.length;
+
+              return (
+                <button
+                  key={mod.code}
+                  type="button"
+                  onClick={() => onSelectModule(mod.code)}
+                  className={`shrink-0 lg:w-full text-left px-3 py-2.5 rounded-xl border transition-all cursor-pointer ${
+                    isSelected
+                      ? 'border-zinc-950 ring-1 ring-zinc-950 bg-zinc-950 text-white dark:border-white dark:ring-white dark:bg-white dark:text-zinc-950 shadow-2xs'
+                      : 'sar-glass-card border-zinc-200/90 dark:border-zinc-800 text-zinc-800 dark:text-zinc-200 hover:border-zinc-400 dark:hover:border-zinc-700'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded shrink-0 ${
+                          isSelected
+                            ? 'bg-white/15 text-white dark:bg-zinc-900/15 dark:text-zinc-950'
+                            : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300'
+                        }`}
+                      >
+                        {mod.code}
+                      </span>
+                      <span
+                        className={`text-xs font-semibold truncate ${
+                          isSelected
+                            ? 'text-white dark:text-zinc-950'
+                            : 'text-zinc-900 dark:text-white'
+                        }`}
+                      >
+                        {mod.shortTitle || formatModuleTitle(mod.title)}
+                      </span>
+                    </div>
+
+                    <span
+                      className={`text-[11px] font-mono font-semibold flex items-center gap-1 shrink-0 tabular-nums ${
+                        isSelected
+                          ? 'text-zinc-200 dark:text-zinc-700'
+                          : 'text-zinc-500 dark:text-zinc-400'
+                      }`}
+                    >
+                      {answered}/{qs.length}
+                      {isDone && <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            onClick={onBackToPreliminary}
+            className="hidden lg:inline-flex w-full items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-800 text-xs font-medium text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors cursor-pointer mt-2"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Back to Preliminary</span>
+          </button>
+        </aside>
+
+        {/* Right Section Questions Stream */}
+        <motion.div
+          key={currentModule?.code || activeModule}
+          id="sec-mod-questions"
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.14, ease: [0.22, 1, 0.36, 1] }}
+          className={`${
+            isExpandedForSideBySide ? 'lg:col-span-9 xl:col-span-10' : 'lg:col-span-9'
+          } space-y-4`}
+        >
+          {currentModule && (
+            <div className="sar-glass-card rounded-2xl border border-zinc-200/90 dark:border-zinc-800 p-4 sm:p-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded-md bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-950 text-xs font-mono font-bold">
+                    {currentModule.code}
+                  </span>
+                  <h2 className="text-base sm:text-lg font-bold text-zinc-900 dark:text-white">
+                    {formatModuleTitle(currentModule.title)}
+                  </h2>
                 </div>
-              )}
+                <span className="text-xs font-mono font-semibold text-zinc-600 dark:text-zinc-400 tabular-nums">
+                  {currentModuleAnsweredCount}/{currentModuleQuestions.length}
+                </span>
+              </div>
 
-              {currentModInfo?.code === 'M8' && (
-                <RepeaterTableEditors
-                  tableType="integrations"
-                  tables={sar.tables}
-                  internetFacing={Boolean(evalRes?.flags.internet_facing)}
-                  isReadOnly={isReadOnly}
-                  onUpdateTables={onUpdateTables}
-                />
+              {currentModuleDef?.description && (
+                <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-1.5 leading-relaxed">
+                  {currentModuleDef.description}
+                </p>
               )}
             </div>
           )}
 
-          {/* Module Prev / Next Footer */}
-          <div id="sec-mod-evidence" className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-4">
-            {prevMod ? (
-              <button
-                type="button"
-                onClick={() => onSelectModule(prevMod.code)}
-                className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full border border-zinc-300 dark:border-zinc-700 text-xs font-semibold hover:border-zinc-950 cursor-pointer transition-colors"
-              >
-                <ArrowLeft className="w-4 h-4 shrink-0" />
-                <span>Previous: {prevMod.shortTitle}</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={onBackToPreliminary}
-                className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full border border-zinc-300 dark:border-zinc-700 text-xs font-semibold hover:border-zinc-950 cursor-pointer transition-colors"
-              >
-                <ArrowLeft className="w-4 h-4 shrink-0" />
-                <span>Back to Preliminary Checklist</span>
-              </button>
-            )}
+          {/* Questions in Current Module */}
+          <div className="space-y-4">
+            {currentModuleQuestions.map((q, idx) => {
+              const ans = sar.answers[q.id];
+              const answered = isQuestionAnswered(ans);
+              const chainCfg = getDetailedQuestionChainConfig(
+                q.id,
+                q.text,
+                q.moduleId,
+                q.showOnlyIfText
+              );
+              const isWhyOpen = hoveredWhyId === q.id;
+              const crispWhy = getCrispWhyText(q.whyWeAsk, chainCfg.chainFromPreliminary);
 
-            {nextMod ? (
-              <button
-                type="button"
-                onClick={() => onSelectModule(nextMod.code)}
-                className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-full bg-zinc-950 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white dark:text-zinc-900 text-white text-xs font-semibold cursor-pointer shadow-xs transition-all"
-              >
-                <span>Next Section: {nextMod.shortTitle}</span>
-                <ArrowRight className="w-4 h-4 shrink-0" />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={tryProceedToReview}
-                className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-full bg-zinc-950 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white dark:text-zinc-900 text-white text-xs font-semibold cursor-pointer shadow-xs transition-all"
-              >
-                {!flowGates.modulesComplete && !isReadOnly && <Lock className="w-4 h-4 shrink-0" />}
-                <span>Proceed to Full Review &amp; Submit</span>
-                <ArrowRight className="w-4 h-4 shrink-0" />
-              </button>
-            )}
+              return (
+                <div
+                  key={q.id}
+                  id={`mod-q-${q.id}`}
+                  data-scroll-card="true"
+                  data-scroll-label={`${q.code} · Question ${idx + 1}`}
+                  className="sar-glass-card rounded-2xl border border-zinc-200/90 dark:border-zinc-800 p-4 sm:p-5 transition-all"
+                >
+                  {/* Clean Top Row — Simple Question Number + Short Hovering Why We Ask */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-md bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-950 text-[10px] font-mono font-bold tabular-nums">
+                        Question {idx + 1} of {currentModuleQuestions.length}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2.5">
+                      {(q.whyWeAsk || chainCfg.chainFromPreliminary) && (
+                        <div
+                          className="relative"
+                          onMouseEnter={() => setHoveredWhyId(q.id)}
+                          onMouseLeave={() => setHoveredWhyId(null)}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setHoveredWhyId(isWhyOpen ? null : q.id)}
+                            className="inline-flex items-center gap-1 text-[11px] text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors cursor-pointer"
+                          >
+                            <HelpCircle className="w-3.5 h-3.5" />
+                            <span>Why we ask</span>
+                          </button>
+
+                          {isWhyOpen && (
+                            <div className="absolute right-0 top-full mt-1.5 z-40 w-64 sm:w-72 p-3 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-lg text-[11px] leading-snug text-zinc-700 dark:text-zinc-200">
+                              {crispWhy}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {answered && (
+                        <CheckCircle2 className="w-4 h-4 text-zinc-900 dark:text-zinc-100 shrink-0" />
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Question Headline & Hint */}
+                  <h3 className="text-sm sm:text-base font-semibold text-zinc-900 dark:text-white leading-snug">
+                    {getContextualDetailedQuestionTitle(
+                      q,
+                      primarySolutionName,
+                      connectedSystemNames
+                    )}
+                  </h3>
+                  {q.hint && (
+                    <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-1 leading-relaxed">
+                      {q.hint}
+                    </p>
+                  )}
+
+                  {/* Primary Control Input */}
+                  {renderPrimaryControl(q)}
+
+                  {/* Dynamic Connected Follow-up Checks & Side-by-Side Threads */}
+                  {renderChainedFollowUps(q)}
+                </div>
+              );
+            })}
           </div>
-            </motion.div>
-          </AnimatePresence>
-        </main>
+
+          {/* Module Repeater Table (e.g., Firewall Rules, API Endpoints, Integrations) */}
+          {currentModuleDef?.repeaterTable && currentModuleDef.repeaterTable !== 'servers' && (
+            <RepeaterTableEditors
+              tableType={currentModuleDef.repeaterTable}
+              tables={sar.tables}
+              internetFacing={Boolean(evaluation?.flags.internet_facing)}
+              isReadOnly={sar.status === 'submitted'}
+              onUpdateTables={onUpdateTables}
+            />
+          )}
+
+          {/* Section Footer Navigation */}
+          <div
+            id="sec-mod-evidence"
+            className="sar-glass-card rounded-2xl border border-zinc-200/90 dark:border-zinc-800 p-4 flex flex-col sm:flex-row items-center justify-between gap-3"
+          >
+            <div className="text-xs text-zinc-600 dark:text-zinc-400 font-mono tabular-nums">
+              Section {currentModuleIndex + 1}/{activeModules.length} ·{' '}
+              {currentModuleAnsweredCount}/{currentModuleQuestions.length} Answered
+            </div>
+
+            <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
+              {currentModuleIndex > 0 ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onSelectModule(activeModules[currentModuleIndex - 1].code)
+                  }
+                  className="sar-glass-btn px-3.5 py-2 rounded-xl border border-zinc-200 dark:border-zinc-800 text-xs font-medium text-zinc-700 dark:text-zinc-200 cursor-pointer"
+                >
+                  Previous Section
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onBackToPreliminary}
+                  className="sar-glass-btn px-3.5 py-2 rounded-xl border border-zinc-200 dark:border-zinc-800 text-xs font-medium text-zinc-700 dark:text-zinc-200 cursor-pointer"
+                >
+                  Back to Preliminary
+                </button>
+              )}
+
+              {currentModuleIndex < activeModules.length - 1 ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onSelectModule(activeModules[currentModuleIndex + 1].code)
+                  }
+                  className="sar-glass-primary-btn inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer"
+                >
+                  <span>Next: {activeModules[currentModuleIndex + 1].code}</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onProceedToReview}
+                  className="sar-glass-primary-btn inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer"
+                >
+                  <span>Continue to Architecture Flow</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+        </motion.div>
       </div>
     </div>
   );

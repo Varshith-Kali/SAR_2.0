@@ -1,10 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertCircle,
-  AlertTriangle,
   ArrowRight,
   Check,
-  ExternalLink,
   Plus,
   Search,
   ShieldAlert,
@@ -17,10 +15,8 @@ import { CyberKickerTrace } from './CyberScrollTrace';
 
 interface RequestBasicsViewProps {
   sar: SARRecord;
-  allSars: SARRecord[];
   onUpdateBasics: (patch: Partial<RequestBasicsData>) => void;
   onContinueToPreliminary: () => void;
-  onOpenExistingSAR: (sarId: string) => void;
 }
 
 const DATA_TYPE_SHORTLIST = [
@@ -74,7 +70,10 @@ export const RequestBasicsView: React.FC<RequestBasicsViewProps> = ({
 
   const ticketTrimmed = (basics.ticketNo || '').trim();
   const isTicketFormatValid =
-    ticketTrimmed === '' || /^(INC|RITM|CHG|REQ|SAR)[0-9]{5,10}$/i.test(ticketTrimmed);
+    ticketTrimmed !== '' && /^(INC|RITM|CHG|REQ|SAR)[0-9]{5,10}$/i.test(ticketTrimmed);
+  const showTicketError =
+    (ticketTrimmed !== '' && !isTicketFormatValid) ||
+    (showGateError && !isTicketFormatValid);
 
   const secretWarningReq =
     detectLiveSecretInText(basics.businessRequirement) ||
@@ -113,7 +112,7 @@ export const RequestBasicsView: React.FC<RequestBasicsViewProps> = ({
   };
 
   return (
-    <div className="max-w-4xl mx-auto px-6 pt-4 pb-6 relative">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 xl:pl-14 py-6 relative">
       {/* Section Header */}
       <div
         id="sec-basics-header"
@@ -123,7 +122,7 @@ export const RequestBasicsView: React.FC<RequestBasicsViewProps> = ({
           <div className="inline-flex items-center gap-2 text-xs font-mono font-bold text-zinc-950 dark:text-white mb-1.5">
             <CyberKickerTrace />
             <span className="px-2.5 py-0.5 rounded-full bg-zinc-950 text-white dark:bg-white dark:text-zinc-950">
-              PHASE 1 OF 4
+              PHASE 1 OF 5
             </span>
             <span>Request Basics</span>
           </div>
@@ -208,7 +207,7 @@ export const RequestBasicsView: React.FC<RequestBasicsViewProps> = ({
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                  ServiceNow Ticket (Optional)
+                  ServiceNow Ticket <span className="text-red-600">*</span>
                 </label>
               </div>
               <input
@@ -216,17 +215,21 @@ export const RequestBasicsView: React.FC<RequestBasicsViewProps> = ({
                 disabled={isReadOnly}
                 value={basics.ticketNo}
                 onChange={(e) => onUpdateBasics({ ticketNo: e.target.value.toUpperCase() })}
-                placeholder="e.g. RITM0049210 or leave blank"
+                placeholder="e.g. RITM0094821"
                 className={`w-full px-3.5 py-2.5 rounded-xl border bg-white/90 dark:bg-zinc-950/90 text-zinc-950 dark:text-white text-sm font-mono focus:outline-none ${
-                  !isTicketFormatValid
+                  showTicketError
                     ? 'border-red-500'
                     : 'border-zinc-200 dark:border-zinc-700 focus:border-zinc-950 dark:focus:border-zinc-300'
                 }`}
               />
-              {!isTicketFormatValid && (
+              {showTicketError && (
                 <p className="text-[11px] text-red-600 mt-1 flex items-center gap-1">
                   <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                  <span>Expected format: RITM, INC, CHG, REQ, or SAR followed by 5–10 digits.</span>
+                  <span>
+                    {ticketTrimmed === ''
+                      ? 'ServiceNow Ticket is mandatory (e.g. RITM0094821).'
+                      : 'Expected format: RITM, INC, CHG, REQ, or SAR followed by 5–10 digits.'}
+                  </span>
                 </p>
               )}
             </div>
@@ -433,10 +436,10 @@ export const RequestBasicsView: React.FC<RequestBasicsViewProps> = ({
           </div>
 
           <h2 className="font-display text-base font-bold text-zinc-950 dark:text-white mb-1">
-            Preliminary Data Types Involved (Refined in Stage 5)
+            Preliminary Data Types Involved
           </h2>
           <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-4">
-            Select a quick initial list of data types handled by this project:
+            Select the data types handled by this project (automatically pre-fills Stage 1 data classification in the Preliminary Checklist):
           </p>
           <div className="flex flex-wrap gap-2.5">
             {DATA_TYPE_SHORTLIST.map((dt) => {
@@ -468,7 +471,7 @@ export const RequestBasicsView: React.FC<RequestBasicsViewProps> = ({
               <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60">
                 <AlertCircle className="w-3.5 h-3.5 shrink-0 text-amber-600" />
                 <span>
-                  {flowGates.missingBasicsFields.length} required field{flowGates.missingBasicsFields.length > 1 ? 's' : ''} remaining
+                  {flowGates.missingBasicsFields.length} required field{flowGates.missingBasicsFields.length > 1 ? 's' : ''} remaining: {flowGates.missingBasicsFields.join(' · ')}
                 </span>
               </div>
             ) : (

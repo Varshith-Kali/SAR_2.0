@@ -37,7 +37,6 @@
   }
 
   html {
-    scroll-behavior: smooth;
     overflow-x: clip;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior-y: auto;
@@ -187,9 +186,62 @@
     inset 0 1px 0 0 rgba(255, 255, 255, 0.22);
 }
 
+/* Primary & Secondary Navigation Buttons across Preliminary, Checklist & Flow */
+.sar-glass-primary-btn {
+  background-color: #09090b;
+  color: #ffffff;
+  border: 1px solid #09090b;
+  box-shadow: 0 2px 6px rgba(9, 9, 11, 0.14);
+}
+
+.sar-glass-primary-btn:hover:not(:disabled) {
+  background-color: #27272a;
+  border-color: #27272a;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px -2px rgba(9, 9, 11, 0.22);
+}
+
+.dark .sar-glass-primary-btn {
+  background-color: #ffffff;
+  color: #09090b;
+  border: 1px solid #ffffff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+.dark .sar-glass-primary-btn:hover:not(:disabled) {
+  background-color: #e4e4e7;
+  border-color: #e4e4e7;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px -2px rgba(255, 255, 255, 0.18);
+}
+
+.sar-glass-btn {
+  background-color: #ffffff;
+  color: #27272a;
+  border: 1px solid #e4e4e7;
+  box-shadow: 0 1px 2px rgba(9, 9, 11, 0.04);
+}
+
+.sar-glass-btn:hover:not(:disabled) {
+  background-color: #f4f4f5;
+  border-color: #d4d4d8;
+  color: #09090b;
+}
+
+.dark .sar-glass-btn {
+  background-color: #18181b;
+  color: #e4e4e7;
+  border: 1px solid #27272a;
+}
+
+.dark .sar-glass-btn:hover:not(:disabled) {
+  background-color: #27272a;
+  border-color: #3f3f46;
+  color: #ffffff;
+}
+
 .bg-studio-grid {
   background-size: 38px 38px;
-  background-attachment: fixed;
   background-image:
     linear-gradient(to right, rgba(9, 9, 11, 0.045) 1px, transparent 1px),
     linear-gradient(to bottom, rgba(9, 9, 11, 0.045) 1px, transparent 1px);
@@ -197,7 +249,6 @@
 
 .dark .bg-studio-grid {
   background-size: 38px 38px;
-  background-attachment: fixed;
   background-image:
     linear-gradient(to right, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
     linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);

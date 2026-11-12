@@ -27,8 +27,8 @@ import {
 
 const OPENAI_RESPONSES_ENDPOINT = 'https://api.openai.com/v1/responses';
 const REQUIRED_MODEL = 'gpt-5.5';
-const LLM_TIMEOUT_MS = 28_000;
-const MAX_SUMMARY_OUTPUT_TOKENS = 2600;
+const LLM_TIMEOUT_MS = 90_000;
+const MAX_SUMMARY_OUTPUT_TOKENS = 1800;
 
 const MODULE_TITLE_MAP: Map<string, string> = new Map(
   MODULE_CATALOG.map((m) => [m.code, m.title])
@@ -218,6 +218,86 @@ export function buildCompactSarAiPayload(
     }
     if (entry.comment) {
       noteParts.push(`DETAIL:${clamp(sanitizeText(entry.comment), 240)}`);
+    }
+    if (
+      q.id === 'P8' &&
+      (sar.answers.P8_THREADS?.value || sar.answers.P_USER_THREADS?.value) &&
+      typeof (sar.answers.P8_THREADS?.value || sar.answers.P_USER_THREADS?.value) === 'object'
+    ) {
+      const rawThreads = (sar.answers.P8_THREADS?.value ||
+        sar.answers.P_USER_THREADS?.value) as Record<string, Record<string, string>>;
+      const tEntries = Object.entries(rawThreads);
+      if (tEntries.length > 0) {
+        noteParts.push(
+          `THREADS:${clamp(
+            sanitizeText(
+              tEntries
+                .map(
+                  ([u, c]) =>
+                    `${u}[${c.platform || ''}/${c.accessScope || ''}/${c.networkHow || c.networkMedium || ''}/${c.authMechanism || c.authMethod || ''}]`
+                )
+                .join(',')
+            ),
+            220
+          )}`
+        );
+      }
+    }
+    if (q.id === 'P13' && sar.answers.P13_APP_FLOWS?.value && typeof sar.answers.P13_APP_FLOWS.value === 'object') {
+      const fEntries = Object.entries(sar.answers.P13_APP_FLOWS.value as Record<string, Record<string, string>>);
+      if (fEntries.length > 0) {
+        noteParts.push(
+          `APP_FLOWS:${clamp(
+            sanitizeText(
+              fEntries
+                .map(([a, c]) => `${a}[${c.direction || ''}/${c.protocol || c.channel || ''}/${c.hostingTarget || c.networkZone || ''}/enc:${c.encrypted || 'yes'}]`)
+                .join(',')
+            ),
+            220
+          )}`
+        );
+      }
+    }
+    if (q.id === 'P5' && sar.answers.P5_APP_HOSTING?.value && typeof sar.answers.P5_APP_HOSTING.value === 'object') {
+      const hEntries = Object.entries(sar.answers.P5_APP_HOSTING.value as Record<string, Record<string, string>>);
+      if (hEntries.length > 0) {
+        noteParts.push(
+          `APP_HOSTING:${clamp(
+            sanitizeText(
+              hEntries
+                .map(([a, c]) => `${a}[${c.platform || c.hostingPlatform || ''}/${c.role || ''}/${c.zone || c.networkZone || ''}]`)
+                .join(',')
+            ),
+            220
+          )}`
+        );
+      }
+    }
+    if (!isPrelim) {
+      const fMap = sar.answers[`${q.id}_FOLLOWUPS`]?.value;
+      if (fMap && typeof fMap === 'object' && !Array.isArray(fMap)) {
+        const fEntries = Object.entries(fMap as Record<string, string>);
+        if (fEntries.length > 0) {
+          noteParts.push(
+            `FOLLOWUPS:${clamp(
+              sanitizeText(fEntries.map(([k, v]) => `${k}=${v}`).join(',')),
+              180
+            )}`
+          );
+        }
+      }
+      const tMap = sar.answers[`${q.id}_THREADS`]?.value;
+      if (tMap && typeof tMap === 'object' && !Array.isArray(tMap)) {
+        const tEntries = Object.entries(tMap as Record<string, string>);
+        if (tEntries.length > 0) {
+          noteParts.push(
+            `USER_THREADS:${clamp(
+              sanitizeText(tEntries.map(([k, v]) => `${k}=${v}`).join(',')),
+              180
+            )}`
+          );
+        }
+      }
     }
     if (noteParts.length > 0) {
       notes[q.code] = noteParts.join(' ; ');
@@ -524,10 +604,10 @@ function resolveCompactQuestionPair(
 }
 
 const STAGE_TITLES: Record<number, string> = {
-  1: 'Stage 1 (WHO — Users, Identities & Ownership)',
-  2: 'Stage 2 (HOW — Channels, Protocols & Connectivity)',
-  3: 'Stage 3 (WHERE — Hosting, Environments & Network Locations)',
-  4: 'Stage 4 (WHAT — Project Scope, Data Classification, Assets, Regulations & AI)',
+  1: 'Stage 1 (WHAT — Project Scope, Data Classification, Assets, Regulations & AI)',
+  2: 'Stage 2 (WHO — Users, Identities & Ownership)',
+  3: 'Stage 3 (HOW — Channels, Protocols & Connectivity)',
+  4: 'Stage 4 (WHERE — Hosting, Environments & Network Locations)',
 };
 
 /**
@@ -847,49 +927,18 @@ export function classifyOpenAIError(status: number, body: string, apiKey?: strin
 type LlmMessage = { role: 'user' | 'assistant'; content: string };
 
 /**
- * Direct non-streaming call to the OpenAI Responses API (`POST https://api.openai.com/v1/responses`)
- * using ONLY `model: "gpt-5.5"` and `store: false`. Zero fallbacks.
+ * Extracts text from an OpenAI `/v1/responses` output object.
  */
-export async function callLLM(
-  config: LlmConfig,
-  messages: LlmMessage[],
-  maxOutputTokens: number = MAX_SUMMARY_OUTPUT_TOKENS
-): Promise<string> {
-  if (!isConfigured(config)) {
-    throw new LlmError(
-      'invalid-key',
-      'OpenAI API key is not configured. Configure your API key for GPT-5.5 in session memory.'
-    );
+function extractTextFromResponseObject(data: Record<string, unknown> | null | undefined): string | null {
+  if (!data || typeof data !== 'object') return null;
+
+  if (typeof data.output_text === 'string' && data.output_text.trim().length > 0) {
+    return data.output_text;
   }
 
-  const res = await fetchWithTimeout(OPENAI_RESPONSES_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: REQUIRED_MODEL,
-      instructions: SYSTEM_PROMPT,
-      input: messages,
-      text: { format: { type: 'json_object' } },
-      max_output_tokens: maxOutputTokens,
-      store: false,
-    }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw classifyOpenAIError(res.status, errText, config.apiKey);
-  }
-
-  const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
-  const outputArr = Array.isArray(data?.output)
-    ? (data.output as Record<string, unknown>[])
-    : [];
-
+  const outputArr = Array.isArray(data.output) ? (data.output as Record<string, unknown>[]) : [];
   for (const outputItem of outputArr) {
-    if (outputItem.type === 'reasoning') continue;
+    if (!outputItem || outputItem.type === 'reasoning') continue;
     if (Array.isArray(outputItem.content)) {
       const contentArr = outputItem.content as Record<string, unknown>[];
       for (const item of contentArr) {
@@ -915,10 +964,74 @@ export async function callLLM(
     }
   }
 
-  if (data && typeof (data as Record<string, unknown>).text === 'string') {
-    const t = (data as Record<string, unknown>).text as string;
-    if (t.length > 0) return t;
+  if (typeof data.text === 'string' && data.text.length > 0) {
+    return data.text;
   }
+
+  return null;
+}
+
+/**
+ * Direct non-streaming call to the OpenAI Responses API (`POST https://api.openai.com/v1/responses`)
+ * using ONLY `model: "gpt-5.5"` and `store: false`. Zero fallbacks.
+ */
+export async function callLLM(
+  config: LlmConfig,
+  messages: LlmMessage[],
+  maxOutputTokens: number = MAX_SUMMARY_OUTPUT_TOKENS
+): Promise<string> {
+  if (!isConfigured(config)) {
+    throw new LlmError(
+      'invalid-key',
+      'OpenAI API key is not configured. Configure your API key for GPT-5.5 in session memory.'
+    );
+  }
+
+  const basePayload = {
+    model: REQUIRED_MODEL,
+    instructions: SYSTEM_PROMPT,
+    input: messages,
+    text: { format: { type: 'json_object' } },
+    max_output_tokens: maxOutputTokens,
+    store: false,
+  };
+
+  let res = await fetchWithTimeout(OPENAI_RESPONSES_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.apiKey}`,
+    },
+    body: JSON.stringify({
+      ...basePayload,
+      reasoning: { effort: 'low' },
+    }),
+  });
+
+  if (res.status === 400) {
+    const errPreview = await res.text().catch(() => '');
+    if (errPreview.includes('reasoning')) {
+      res = await fetchWithTimeout(OPENAI_RESPONSES_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify(basePayload),
+      });
+    } else {
+      throw classifyOpenAIError(res.status, errPreview, config.apiKey);
+    }
+  }
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw classifyOpenAIError(res.status, errText, config.apiKey);
+  }
+
+  const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  const extracted = extractTextFromResponseObject(data);
+  if (extracted) return extracted;
 
   throw new LlmError('provider', 'OpenAI GPT-5.5 returned an empty or unrecognized response.');
 }
@@ -940,15 +1053,39 @@ export async function* callLLMStream(
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+  let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(
+    () => controller.abort(),
+    LLM_TIMEOUT_MS
+  );
+  const refreshTimer = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+  };
+  const clearStreamTimer = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+  };
+
   const onExternalAbort = () => controller.abort();
   if (externalSignal) {
     if (externalSignal.aborted) {
-      clearTimeout(timer);
+      clearStreamTimer();
       return;
     }
     externalSignal.addEventListener('abort', onExternalAbort, { once: true });
   }
+
+  const baseStreamPayload = {
+    model: REQUIRED_MODEL,
+    instructions: SYSTEM_PROMPT,
+    input: messages,
+    text: { format: { type: 'json_object' } },
+    max_output_tokens: MAX_SUMMARY_OUTPUT_TOKENS,
+    stream: true,
+    store: false,
+  };
 
   let res: Response;
   try {
@@ -959,18 +1096,33 @@ export async function* callLLMStream(
         Authorization: `Bearer ${config.apiKey}`,
       },
       body: JSON.stringify({
-        model: REQUIRED_MODEL,
-        instructions: SYSTEM_PROMPT,
-        input: messages,
-        text: { format: { type: 'json_object' } },
-        max_output_tokens: MAX_SUMMARY_OUTPUT_TOKENS,
-        stream: true,
-        store: false,
+        ...baseStreamPayload,
+        reasoning: { effort: 'low' },
       }),
       signal: controller.signal,
     });
+
+    if (res.status === 400) {
+      const errPreview = await res.text().catch(() => '');
+      if (errPreview.includes('reasoning')) {
+        refreshTimer();
+        res = await fetch(OPENAI_RESPONSES_ENDPOINT, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${config.apiKey}`,
+          },
+          body: JSON.stringify(baseStreamPayload),
+          signal: controller.signal,
+        });
+      } else {
+        clearStreamTimer();
+        externalSignal?.removeEventListener('abort', onExternalAbort);
+        throw classifyOpenAIError(res.status, errPreview, config.apiKey);
+      }
+    }
   } catch (e: unknown) {
-    clearTimeout(timer);
+    clearStreamTimer();
     externalSignal?.removeEventListener('abort', onExternalAbort);
     if (externalSignal?.aborted) return;
     if (e instanceof LlmError) throw e;
@@ -987,18 +1139,19 @@ export async function* callLLMStream(
   }
 
   if (!res.ok) {
-    clearTimeout(timer);
+    clearStreamTimer();
     externalSignal?.removeEventListener('abort', onExternalAbort);
     const errText = await res.text().catch(() => '');
     throw classifyOpenAIError(res.status, errText, config.apiKey);
   }
 
   if (!res.body) {
-    clearTimeout(timer);
+    clearStreamTimer();
     externalSignal?.removeEventListener('abort', onExternalAbort);
     throw new LlmError('provider', 'OpenAI GPT-5.5 returned an empty streaming body.');
   }
 
+  refreshTimer();
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let lineBuffer = '';
@@ -1021,6 +1174,7 @@ export async function* callLLMStream(
       }
 
       if (chunk.done) break;
+      refreshTimer();
 
       lineBuffer += decoder.decode(chunk.value, { stream: true });
       const lines = lineBuffer.split('\n');
@@ -1046,6 +1200,17 @@ export async function* callLLMStream(
           yield { kind: 'delta' as const, text: evt['delta'] as string };
         } else if (evtType === 'response.output_text.done' && typeof evt['text'] === 'string') {
           finalText = evt['text'] as string;
+        } else if (
+          (evtType === 'response.completed' || evtType === 'response.done') &&
+          evt['response'] &&
+          typeof evt['response'] === 'object'
+        ) {
+          const completedText = extractTextFromResponseObject(
+            evt['response'] as Record<string, unknown>
+          );
+          if (completedText && completedText.length > finalText.length) {
+            finalText = completedText;
+          }
         } else if (evtType === 'error') {
           const msg = scrubApiKeyFromText(
             String(evt['message'] ?? JSON.stringify(evt)),
@@ -1058,7 +1223,7 @@ export async function* callLLMStream(
       }
     }
   } finally {
-    clearTimeout(timer);
+    clearStreamTimer();
     externalSignal?.removeEventListener('abort', onExternalAbort);
     reader.releaseLock();
   }
@@ -1279,21 +1444,13 @@ export async function* streamGenerateSarAiSummary(
     `Return ONLY a valid JSON object (no prose, no markdown fences) matching this exact schema:\n` +
     `{\n` +
     `  "overallRiskPosture": "Low" | "Moderate" | "Elevated" | "High" | "Critical",\n` +
-    `  "executiveSummary": "6-8 sentences explicitly tagged to Project / Request Name '${resolvedProjectName}' covering: (1) the exact Project / Request Name ('${resolvedProjectName}') and what this SAR review is about, (2) why this Security Architecture Review is being raised, the business objective, and what components are being onboarded, enhanced, integrated, or migrated, (3) the business unit, application criticality tier & RTO, connected bank applications, and target go-live date, (4) the highest data classification, specific data types handled (e.g. PII, PCI-DSS card data, financial records, secrets/keys), record volume, and regulatory drivers (RBI, PCI-DSS, DPDP Act), (5) all human user groups and non-human/automated actors (employees, customers, partners, privileged admins, service accounts, RPA bots), and (6) an executive readiness synthesis across all answered checklist domains.",\n` +
-    `  "changeScopeAndArchitecture": "6-8 sentences explicitly referencing '${resolvedProjectName}' covering all major technical points from the filled checklist: (1) hosting topology and environments in scope (On-Premises DC, AWS Cloud services selected, Hybrid, or Vendor SaaS), (2) identity, authentication, SSO/MFA, CIAM, non-human secret vaulting, and privileged access (CyberArk PAM, Maker-Checker, session recording), (3) end-to-end data flow across Web/App/DB network zones, system integrations, APIs, SFTP batch file transfers, message queues/webhooks, and database links, (4) API Gateway routing, mTLS/OAuth2, rate-limiting, schema validation, and payload encryption (JWE/PGP), (5) data protection at rest (AES-256 KMS/HSM), in transit (TLS 1.2/1.3), in cache, UAT data masking, and Database Activity Monitoring (DAM), and (6) perimeter WAF/DDoS/DMZ firewall rules, AI/LLM guardrails (if applicable), third-party vendor governance, SOC SIEM logging, and Disaster Recovery (RPO/RTO & immutable backups).",\n` +
-    `  "stageHighlights": [\n` +
-    `    {\n` +
-    `      "stageTitle": "Domain title (e.g. 'Scope, Purpose & Data Classification', 'Identity, SSO & Privileged Access', 'APIs, Integrations & File Transfers', 'Cloud, Network Perimeter & Resilience')",\n` +
-    `      "summary": "1-2 sentence synthesis of the requester's checklist responses in this domain for '${resolvedProjectName}'",\n` +
-    `      "keySelections": ["Concrete control or scope fact 1 from checklist", "Concrete control or scope fact 2", "Concrete control or scope fact 3"]\n` +
-    `    }\n` +
-    `  ],\n` +
+    `  "executiveSummary": "4-6 sentences explicitly tagged to Project / Request Name '${resolvedProjectName}' covering: (1) the exact Project / Request Name ('${resolvedProjectName}') and what this SAR review is about, (2) why this Security Architecture Review is being raised, the business objective, and what components are being onboarded, enhanced, integrated, or migrated, (3) the business unit, ServiceNow ticket reference, connected bank applications, and target go-live date, (4) the highest data classification, specific data types handled (e.g. PII, PCI-DSS card data, financial records, secrets/keys), record volume, and regulatory drivers (RBI, PCI-DSS, DPDP Act), and (5) all human user groups and non-human/automated actors in scope.",\n` +
+    `  "changeScopeAndArchitecture": "4-6 sentences explicitly referencing '${resolvedProjectName}' covering all major technical points from the filled checklist: (1) hosting topology and environments in scope (On-Premises DC, AWS Cloud services selected, Hybrid, or Vendor SaaS), (2) identity, authentication, SSO/MFA, CIAM, non-human secret vaulting, and privileged access (CyberArk PAM, Maker-Checker, session recording), (3) end-to-end data flow across Web/App/DB network zones, system integrations, APIs, SFTP batch file transfers, message queues/webhooks, and database links, (4) API Gateway routing, mTLS/OAuth2, rate-limiting, schema validation, and payload encryption (JWE/PGP), and (5) data protection at rest (AES-256 KMS/HSM), in transit (TLS 1.2/1.3), perimeter WAF/DDoS/DMZ firewall rules, SOC SIEM logging, and Disaster Recovery.",\n` +
     `  "recommendedReviewerFocus": [\n` +
     `    "Specific priority verification point 1 for '${resolvedProjectName}' — concrete control or architectural boundary the ISG security reviewer should verify before sign-off",\n` +
     `    "Specific priority verification point 2",\n` +
     `    "Specific priority verification point 3",\n` +
-    `    "Specific priority verification point 4",\n` +
-    `    "Specific priority verification point 5"\n` +
+    `    "Specific priority verification point 4"\n` +
     `  ]\n` +
     `}`;
 
@@ -1319,16 +1476,35 @@ export async function* streamGenerateSarAiSummary(
       }
     }
     rawJson = doneText.length > 0 ? doneText : accumulated;
+    if (!rawJson.trim() && !externalSignal?.aborted) {
+      rawJson = await callLLM(config, [{ role: 'user', content: prompt }]);
+    }
   } catch (e: unknown) {
-    const rawMsg =
-      e instanceof Error
-        ? e.message
-        : 'OpenAI GPT-5.5 request failed. Verify your API key and model access.';
-    yield {
-      type: 'error',
-      message: scrubApiKeyFromText(rawMsg, config.apiKey),
-    };
-    return;
+    if (!externalSignal?.aborted && e instanceof LlmError && (e.kind === 'timeout' || e.kind === 'network')) {
+      try {
+        rawJson = await callLLM(config, [{ role: 'user', content: prompt }]);
+      } catch (retryErr: unknown) {
+        const rawMsg =
+          retryErr instanceof Error
+            ? retryErr.message
+            : 'OpenAI GPT-5.5 request failed. Verify your API key and model access.';
+        yield {
+          type: 'error',
+          message: scrubApiKeyFromText(rawMsg, config.apiKey),
+        };
+        return;
+      }
+    } else {
+      const rawMsg =
+        e instanceof Error
+          ? e.message
+          : 'OpenAI GPT-5.5 request failed. Verify your API key and model access.';
+      yield {
+        type: 'error',
+        message: scrubApiKeyFromText(rawMsg, config.apiKey),
+      };
+      return;
+    }
   }
 
   const parsed = rawJson ? parseJsonLoose(rawJson) : null;

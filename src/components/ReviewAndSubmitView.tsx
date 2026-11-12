@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowLeft,
   Check,
   CheckCircle2,
   Copy,
@@ -15,7 +16,6 @@ import {
   RefreshCw,
   Settings,
   ShieldCheck,
-  Shuffle,
   Sparkles,
   Table2,
   Zap,
@@ -31,20 +31,17 @@ import {
   buildCompactSarAiPayload,
   type SarSummaryStreamEvent,
 } from '../shared/sarAiEngine';
-import { computeBrowserSha256 } from '../shared/seedData';
 import {
   ContradictionOverride,
   DefinitionVersion,
   ModuleCode,
   SARRecord,
   SarAiSummaryResult,
-  UserPersona,
 } from '../shared/types';
 
 interface ReviewAndSubmitViewProps {
   sar: SARRecord;
   definition: DefinitionVersion;
-  currentPersona: UserPersona;
   llmConfig: LlmConfig | null;
   onOpenLlmConfig: () => void;
   onSaveAiSummary: (summary: SarAiSummaryResult) => void;
@@ -56,18 +53,17 @@ interface ReviewAndSubmitViewProps {
   onJumpToBasics: () => void;
   onJumpToPreliminary: (stage: number) => void;
   onJumpToModule: (moduleCode: ModuleCode) => void;
+  onBackToFlow?: () => void;
   onOverrideContradiction: (warningId: string, justification: string) => void;
   onSubmitSAR: () => void;
   onReopenAsRevision: (reason: string) => void;
   onExportPDF: (sar: SARRecord) => void;
   onExportExcel: (sar: SARRecord) => void;
-  onFillRandomSample?: () => void;
 }
 
 export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
   sar,
   definition,
-  currentPersona,
   llmConfig,
   onOpenLlmConfig,
   onSaveAiSummary,
@@ -75,12 +71,12 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
   onJumpToBasics,
   onJumpToPreliminary,
   onJumpToModule,
+  onBackToFlow,
   onOverrideContradiction,
   onSubmitSAR,
   onReopenAsRevision,
   onExportPDF,
   onExportExcel,
-  onFillRandomSample,
 }) => {
   const [activeExcelSheet, setActiveExcelSheet] = useState<'sheet1' | 'sheet2'>('sheet1');
   const [overrideDrafts, setOverrideDrafts] = useState<Record<string, string>>({});
@@ -89,12 +85,6 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
   const [reopenReason, setReopenReason] = useState(
     'Adding new partner firewall CIDR and updating DR database topology.'
   );
-  const [verifyState, setVerifyState] = useState<{
-    loading: boolean;
-    verified?: boolean;
-    recomputedSha256?: string;
-    verifiedAt?: string;
-  }>({ loading: false });
 
   // AI Summary generation state
   const [aiGenerating, setAiGenerating] = useState(false);
@@ -235,26 +225,6 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
     onNotify?.('AI Summary Copied', `Copied AI SAR Summary tagged to "${taggedProject}".`, 'success');
   };
 
-  const handleVerifyIntegrity = async () => {
-    setVerifyState({ loading: true });
-    try {
-      const recomputed = await computeBrowserSha256(sar);
-      setVerifyState({
-        loading: false,
-        verified: !sar.submissionSha256 || recomputed === sar.submissionSha256,
-        recomputedSha256: recomputed,
-        verifiedAt: new Date().toISOString(),
-      });
-    } catch {
-      setVerifyState({
-        loading: false,
-        verified: true,
-        recomputedSha256: sar.submissionSha256,
-        verifiedAt: new Date().toISOString(),
-      });
-    }
-  };
-
   const handleJumpToContradictionQuestion = (qId?: string, fallbackMod?: ModuleCode) => {
     if (qId) {
       const qDef = definition.questions.find((q) => q.id === qId);
@@ -313,9 +283,13 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
 
   const answeredPrelimCount = workbookData.preliminaryRows.length;
   const answeredSecurityCount = workbookData.securityQuestionnaireRows.length;
+  const totalInventoryRows =
+    sar.tables.firewall_rules.length +
+    sar.tables.api_endpoints.length +
+    sar.tables.integrations.length;
 
   return (
-    <div id="sec-rev-origin" className="max-w-[1380px] mx-auto px-4 sm:px-6 py-4 sm:py-5 space-y-5 sm:space-y-6">
+    <div id="sec-rev-origin" className="max-w-7xl mx-auto px-4 sm:px-6 xl:pl-14 py-6 space-y-5 sm:space-y-6">
       {/* SCREEN #11: REVISION CHANGE SUMMARY BANNER */}
       {sar.changeSummaryBanner && (
         <div className="p-5 rounded-xl border border-zinc-900 bg-zinc-50 dark:bg-zinc-900 dark:border-zinc-700">
@@ -351,44 +325,38 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
 
       {/* SCREEN #10: SUBMITTED & LOCKED HERO BANNER OR REVIEW HEADER */}
       {isSubmitted ? (
-        <div className="p-6 rounded-xl border-2 border-emerald-600/80 bg-white dark:bg-zinc-900 shadow-xs">
+        <div className="p-6 rounded-2xl border-2 border-emerald-600/80 bg-white dark:bg-zinc-900 shadow-xs">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
             <div>
               <div className="inline-flex items-center gap-2 text-xs font-mono font-bold text-emerald-700 dark:text-emerald-400 mb-2">
                 <Lock className="w-4 h-4" />
                 <span>
-                  SUBMITTED &amp; LOCKED · {sar.displayId} · REVISION {sar.revisionNo}
+                  SUBMITTED &amp; LOCKED · {sar.displayId} · TICKET {sar.basics.ticketNo || 'N/A'} · REVISION {sar.revisionNo}
                 </span>
               </div>
               <h1 className="font-display text-2xl sm:text-3xl font-bold text-zinc-900 dark:text-white">
                 {sar.basics.projectName}
               </h1>
               <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-1">
-                Date Generated: <strong>{workbookData.dateGenerated}</strong> · All responses and security checklist selections are locked.
+                Date Generated: <strong>{workbookData.dateGenerated}</strong> · All responses and security checklist selections are locked and ready for export below.
               </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-              <button
-                type="button"
-                onClick={() => onExportPDF(sar)}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-zinc-300 dark:border-zinc-700 text-xs font-semibold text-zinc-800 dark:text-zinc-100 hover:bg-zinc-50 dark:hover:bg-zinc-800 cursor-pointer whitespace-nowrap transition-colors"
-              >
-                <Printer className="w-4 h-4" />
-                <span>Download PDF Report</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => onExportExcel(sar)}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold cursor-pointer whitespace-nowrap transition-colors"
-              >
-                <FileSpreadsheet className="w-4 h-4" />
-                <span>Download 2-Sheet Excel (.xls)</span>
-              </button>
+              {onBackToFlow && (
+                <button
+                  type="button"
+                  onClick={onBackToFlow}
+                  className="sar-glass-btn inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 text-xs font-semibold cursor-pointer transition-colors"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  <span>Architecture Flow</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setReopenModalOpen(true)}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-zinc-300 dark:border-zinc-700 text-xs font-semibold text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800 cursor-pointer whitespace-nowrap transition-colors"
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-zinc-300 dark:border-zinc-700 text-xs font-semibold text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800 cursor-pointer whitespace-nowrap transition-colors"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
                 <span>Reopen as Revision {sar.revisionNo + 1}</span>
@@ -397,48 +365,208 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
           </div>
         </div>
       ) : (
-        <div className="p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="p-6 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
-            <div className="text-xs font-mono font-bold text-zinc-600 dark:text-zinc-400 mb-1">
-              Phase 4 of 4 · SAR Assist Review &amp; 2-Sheet Excel Workbook ({sar.displayId}) · Date Generated: {workbookData.dateGenerated}
+            <div className="inline-flex flex-wrap items-center gap-2 text-xs font-mono font-bold text-zinc-600 dark:text-zinc-400 mb-1.5">
+              <span className="px-2.5 py-0.5 rounded-full bg-zinc-950 text-white dark:bg-white dark:text-zinc-950">
+                PHASE 5 OF 5
+              </span>
+              <span>
+                {sar.displayId} · Ticket {sar.basics.ticketNo || 'Pending'} · Date Generated: {workbookData.dateGenerated}
+              </span>
             </div>
             <h1 className="font-display text-2xl sm:text-3xl font-bold text-zinc-900 dark:text-white">
-              {sar.basics.projectName || 'Review, Inspect 2-Sheet Excel Report & Submit'}
+              {sar.basics.projectName || 'Review, Export & Submit Security Architecture Package'}
             </h1>
             <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-1">
-              Capturing only requester-responded queries and responses across Sheet 1 (Preliminary Questions &amp; Options) and Sheet 2 (Security Questionnaire).
+              Review synthesized AI insights, export your audit-ready Excel workbook or PDF dossier, and lock the final SAR record.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            {onFillRandomSample && (
+            {onBackToFlow && (
               <button
                 type="button"
-                onClick={onFillRandomSample}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-xs font-semibold text-zinc-900 dark:text-zinc-100 cursor-pointer transition-colors"
+                onClick={onBackToFlow}
+                className="sar-glass-btn inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 text-xs font-semibold cursor-pointer transition-colors"
               >
-                <Shuffle className="w-3.5 h-3.5" />
-                <span>Cycle Random Sample Details</span>
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Architecture Flow</span>
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => onExportPDF(sar)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 text-xs font-semibold hover:bg-zinc-50 dark:hover:bg-zinc-800 cursor-pointer transition-colors"
-            >
-              <FileText className="w-3.5 h-3.5 text-zinc-900 dark:text-zinc-100" />
-              <span>Download PDF Report</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => onExportExcel(sar)}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold cursor-pointer shadow-2xs transition-colors"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Download 2-Sheet Excel (.xls)</span>
-            </button>
           </div>
         </div>
       )}
+
+      {/* =====================================================================
+          DEDICATED EXPORT SECTION — REFINED CARD LAYOUT FOR EXCEL & PDF
+      ===================================================================== */}
+      <section
+        id="sec-rev-export"
+        className="sar-glass-card rounded-2xl border border-zinc-200/90 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 sm:p-6 space-y-5 shadow-xs"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-zinc-100 dark:border-zinc-800">
+          <div>
+            <div className="inline-flex items-center gap-2 text-[11px] font-mono font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-1">
+              <Download className="w-3.5 h-3.5" />
+              <span>Export &amp; Audit Deliverables</span>
+            </div>
+            <h2 className="font-display text-lg sm:text-xl font-bold text-zinc-950 dark:text-white">
+              Export Security Architecture Review Package
+            </h2>
+            <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">
+              Generate clean, audit-ready deliverables populated strictly with your answered questions, selected controls, and architecture inventories.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <span className="px-2.5 py-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 font-mono text-[11px] font-semibold text-zinc-700 dark:text-zinc-300">
+              Ticket: {sar.basics.ticketNo || 'N/A'}
+            </span>
+            <span className="px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/70 font-mono text-[11px] font-semibold text-emerald-800 dark:text-emerald-300">
+              {answeredPrelimCount + answeredSecurityCount} Total Responses Captured
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5">
+          {/* CARD 1: 2-SHEET EXCEL WORKBOOK EXPORT */}
+          <div className="group relative rounded-2xl border border-zinc-200 dark:border-zinc-800 hover:border-emerald-600/60 dark:hover:border-emerald-500/60 bg-gradient-to-b from-zinc-50/70 to-white dark:from-zinc-900/90 dark:to-zinc-900 p-5 flex flex-col justify-between gap-4 transition-all shadow-2xs hover:shadow-md">
+            <div className="space-y-3.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-emerald-600/10 dark:bg-emerald-500/15 border border-emerald-600/20 dark:border-emerald-500/30 flex items-center justify-center text-emerald-700 dark:text-emerald-400 shrink-0">
+                    <FileSpreadsheet className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded bg-emerald-600/10 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300 font-mono text-[10px] font-bold uppercase tracking-wider">
+                        Microsoft Excel · .XLS
+                      </span>
+                      <span className="font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+                        2 Worksheets
+                      </span>
+                    </div>
+                    <h3 className="font-display text-base font-bold text-zinc-950 dark:text-white mt-1">
+                      2-Sheet Excel Audit Workbook
+                    </h3>
+                  </div>
+                </div>
+              </div>
+
+              <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed">
+                Structured multi-tab spreadsheet separating Preliminary Discovery responses from Detailed Security Controls and network/API inventories for ISG review.
+              </p>
+
+              <div className="grid grid-cols-2 gap-2.5 pt-1">
+                <div className="p-2.5 rounded-xl bg-zinc-100/80 dark:bg-zinc-800/60 border border-zinc-200/80 dark:border-zinc-700/70">
+                  <div className="font-mono text-[10px] uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                    Sheet 1 · Preliminary
+                  </div>
+                  <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100 mt-0.5">
+                    {answeredPrelimCount} Answered Items
+                  </div>
+                  <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                    Basics + Stages 1–4 + AI Summary
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-zinc-100/80 dark:bg-zinc-800/60 border border-zinc-200/80 dark:border-zinc-700/70">
+                  <div className="font-mono text-[10px] uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                    Sheet 2 · Security Controls
+                  </div>
+                  <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100 mt-0.5">
+                    {answeredSecurityCount} Answered Controls
+                  </div>
+                  <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                    M1–M16 + {totalInventoryRows} Inventory Rows
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-zinc-200/80 dark:border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <span className="font-mono text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                {sar.displayId}_Rev{sar.revisionNo}_SAR_2Sheet_Report.xls
+              </span>
+              <button
+                type="button"
+                onClick={() => onExportExcel(sar)}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold cursor-pointer shadow-2xs transition-all shrink-0"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download Excel (.xls)</span>
+              </button>
+            </div>
+          </div>
+
+          {/* CARD 2: PRINTABLE PDF REPORT EXPORT */}
+          <div className="group relative rounded-2xl border border-zinc-200 dark:border-zinc-800 hover:border-zinc-900 dark:hover:border-zinc-500 bg-gradient-to-b from-zinc-50/70 to-white dark:from-zinc-900/90 dark:to-zinc-900 p-5 flex flex-col justify-between gap-4 transition-all shadow-2xs hover:shadow-md">
+            <div className="space-y-3.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 flex items-center justify-center shrink-0">
+                    <FileText className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded bg-zinc-200/80 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200 font-mono text-[10px] font-bold uppercase tracking-wider">
+                        Printable Dossier · .PDF
+                      </span>
+                      <span className="font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+                        Archival Format
+                      </span>
+                    </div>
+                    <h3 className="font-display text-base font-bold text-zinc-950 dark:text-white mt-1">
+                      Executive &amp; Security Sign-Off PDF Report
+                    </h3>
+                  </div>
+                </div>
+              </div>
+
+              <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed">
+                Formatted compliance report containing project context, tagged AI executive summary, complete control responses, and SHA-256 verification stamp.
+              </p>
+
+              <div className="grid grid-cols-2 gap-2.5 pt-1">
+                <div className="p-2.5 rounded-xl bg-zinc-100/80 dark:bg-zinc-800/60 border border-zinc-200/80 dark:border-zinc-700/70">
+                  <div className="font-mono text-[10px] uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                    Active Scope
+                  </div>
+                  <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100 mt-0.5">
+                    {evalRes?.activeModules.length ?? 0} Unlocked Sections
+                  </div>
+                  <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                    {sar.basics.connectedAppIds.length + sar.basics.customConnectedApps.length} Connected Systems
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-zinc-100/80 dark:bg-zinc-800/60 border border-zinc-200/80 dark:border-zinc-700/70">
+                  <div className="font-mono text-[10px] uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+                    Audit Status
+                  </div>
+                  <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100 mt-0.5">
+                    {isSubmitted ? 'Locked & Signed Off' : 'Draft Review Snapshot'}
+                  </div>
+                  <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                    Rev {sar.revisionNo} · {workbookData.dateGenerated}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-zinc-200/80 dark:border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <span className="font-mono text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                {sar.displayId}_Rev{sar.revisionNo}_Security_Dossier.pdf
+              </span>
+              <button
+                type="button"
+                onClick={() => onExportPDF(sar)}
+                className="sar-glass-primary-btn inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold cursor-pointer transition-all shrink-0"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Download PDF Report</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
 
       {/* =====================================================================
           AI SECURITY ARCHITECTURE REVIEW SUMMARY (OpenAI · GPT-5.5)
@@ -702,48 +830,7 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
               </div>
             )}
           </div>
-        ) : (
-          <div className="p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-zinc-50/60 dark:bg-zinc-900/50">
-            <div className="space-y-1">
-              <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
-                Ready to synthesize {sar.basics.projectName || sar.displayId} via OpenAI
-              </div>
-              <p className="text-xs text-zinc-600 dark:text-zinc-400">
-                Generates a crisp executive summary of your application architecture, trust boundaries, and security checklist responses.
-              </p>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              {!llmConfig && (
-                <button
-                  type="button"
-                  onClick={onOpenLlmConfig}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-xs font-semibold text-zinc-900 dark:text-zinc-100 cursor-pointer hover:bg-zinc-100 transition-colors"
-                >
-                  <Zap className="w-3.5 h-3.5 text-amber-500" />
-                  <span>1. Configure OpenAI Key</span>
-                </button>
-              )}
-              <button
-                type="button"
-                disabled={aiGenerating}
-                onClick={handleGenerateAiSummary}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-zinc-950 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-200 dark:text-zinc-950 text-white text-xs font-bold cursor-pointer transition-colors"
-              >
-                {aiGenerating ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Generating AI Summary...</span>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>Generate AI SAR Summary</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        )}
+        ) : null}
       </div>
 
       {/* =====================================================================
@@ -754,24 +841,24 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
 
       <div id="sec-rev-workbook" className="rounded-xl border-2 border-zinc-900 dark:border-zinc-700 bg-white dark:bg-zinc-900 overflow-hidden shadow-md">
         {/* Excel Top Ribbon Bar */}
-        <div className="bg-zinc-950 text-white px-5 py-3.5 flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-zinc-800">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-emerald-700 flex items-center justify-center text-white shrink-0">
-              <FileSpreadsheet className="w-5 h-5" />
+        <div className="bg-zinc-950 text-white px-4 py-3 flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-zinc-800">
+          <div className="flex items-start sm:items-center gap-2.5 min-w-0 flex-1">
+            <div className="w-8 h-8 rounded-lg bg-emerald-700 flex items-center justify-center text-white shrink-0">
+              <FileSpreadsheet className="w-4 h-4" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-xs font-bold tracking-wider uppercase text-emerald-400">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-mono text-[11px] font-bold tracking-wider uppercase text-emerald-400">
                   SAR ASSIST · LIVE 2-SHEET EXCEL WORKBOOK PREVIEW
                 </span>
-                <span className="px-2 py-0.5 rounded bg-zinc-800 text-[11px] font-mono text-zinc-300">
+                <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[10px] font-mono text-zinc-300 truncate max-w-[260px]">
                   {sar.displayId}_Rev{sar.revisionNo}_SAR_2Sheet_Report.xls
                 </span>
-                <span className="px-2 py-0.5 rounded bg-zinc-800 text-[11px] font-mono text-emerald-300">
+                <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-[10px] font-mono text-emerald-300">
                   Date Generated: {workbookData.dateGenerated}
                 </span>
               </div>
-              <p className="text-xs text-zinc-400 mt-0.5">
+              <p className="text-[11px] text-zinc-400 mt-0.5 leading-snug">
                 Only requester-responded queries &amp; responses captured ·{' '}
                 <strong className="text-white">Sheet 1:</strong> Preliminary Questions &amp; Options ({answeredPrelimCount} Responses) ·{' '}
                 <strong className="text-white">Sheet 2:</strong> Security Questionnaire ({answeredSecurityCount} Responses)
@@ -779,37 +866,37 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
             <button
               type="button"
               onClick={() => setActiveExcelSheet('sheet1')}
-              className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold cursor-pointer transition-colors ${
+              className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold cursor-pointer transition-colors whitespace-nowrap ${
                 activeExcelSheet === 'sheet1'
                   ? 'bg-white text-zinc-950 shadow-2xs'
                   : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white'
               }`}
             >
-              <Table2 className="w-3.5 h-3.5" />
-              <span>Sheet 1: Preliminary Questions &amp; Options ({answeredPrelimCount})</span>
+              <Table2 className="w-3 h-3 shrink-0" />
+              <span>Sheet 1: Preliminary ({answeredPrelimCount})</span>
             </button>
             <button
               type="button"
               onClick={() => setActiveExcelSheet('sheet2')}
-              className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold cursor-pointer transition-colors ${
+              className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold cursor-pointer transition-colors whitespace-nowrap ${
                 activeExcelSheet === 'sheet2'
                   ? 'bg-white text-zinc-950 shadow-2xs'
                   : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white'
               }`}
             >
-              <ShieldCheck className="w-3.5 h-3.5" />
-              <span>Sheet 2: Security Questionnaire ({answeredSecurityCount})</span>
+              <ShieldCheck className="w-3 h-3 shrink-0" />
+              <span>Sheet 2: Security ({answeredSecurityCount})</span>
             </button>
             <button
               type="button"
               onClick={() => onExportExcel(sar)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold cursor-pointer transition-colors"
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold cursor-pointer transition-colors whitespace-nowrap"
             >
-              <Download className="w-3.5 h-3.5" />
+              <Download className="w-3 h-3 shrink-0" />
               <span>Export .xls File</span>
             </button>
           </div>
@@ -818,33 +905,32 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
         {/* Excel Formula Bar Simulation */}
         <div className="bg-zinc-100 dark:bg-zinc-800/90 px-4 py-1.5 border-b border-zinc-300 dark:border-zinc-700 flex items-center gap-3 text-xs font-mono">
           <span className="px-2 py-0.5 rounded bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 font-bold">
-            {activeExcelSheet === 'sheet1' ? 'A1:E42' : 'A1:E56'}
+            {activeExcelSheet === 'sheet1' ? 'Sheet 1' : 'Sheet 2'}
           </span>
           <span className="text-zinc-400">fx</span>
           <span className="text-zinc-700 dark:text-zinc-200 truncate">
             {activeExcelSheet === 'sheet1'
-              ? `="SAR ASSIST — SHEET 1: PRELIMINARY QUESTIONS & OPTIONS (RESPONSES) · ${sar.displayId} · Date Generated: ${workbookData.dateGenerated}"`
-              : `="SAR ASSIST — SHEET 2: SECURITY QUESTIONNAIRE (DETAILED RESPONSES) · ${sar.displayId} · Date Generated: ${workbookData.dateGenerated}"`}
+              ? `="ISG SECURITY ARCHITECTURE CHECKLIST — SHEET 1: PRELIMINARY DISCOVERY · ${sar.displayId} · Date Generated: ${workbookData.dateGenerated}"`
+              : `="ISG SECURITY ARCHITECTURE CHECKLIST — SHEET 2: SECURITY QUESTIONNAIRE · ${sar.displayId} · Date Generated: ${workbookData.dateGenerated}"`}
           </span>
         </div>
 
         {/* Spreadsheet Grid Content */}
         {activeExcelSheet === 'sheet1' ? (
           <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
-            {/* Section 1A: Request Basics & Project Details Table */}
+            {/* Section 1A: Project & Request Basics Table */}
             <div className="p-4 bg-zinc-50/70 dark:bg-zinc-950/40">
               <div className="bg-zinc-900 text-white px-3.5 py-2 rounded-t-lg text-xs font-mono font-bold tracking-wide flex items-center justify-between">
-                <span>SECTION 1A: REQUEST BASICS &amp; PROJECT DETAILS</span>
+                <span>SECTION 1A: PROJECT &amp; REQUEST BASICS</span>
                 <span className="text-emerald-400">Date Generated: {workbookData.dateGenerated}</span>
               </div>
               <div className="overflow-x-auto border border-t-0 border-zinc-300 dark:border-zinc-700 rounded-b-lg">
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="bg-zinc-800 text-white font-mono text-[11px]">
-                      <th className="py-2 px-2.5 border-r border-zinc-700 w-10 text-center">#</th>
-                      <th className="py-2 px-3 border-r border-zinc-700 w-44">Col A · Category</th>
-                      <th className="py-2 px-3 border-r border-zinc-700 w-60">Col B · Field</th>
-                      <th className="py-2 px-3">Col C–E · Requester Response</th>
+                      <th className="py-2 px-3 border-r border-zinc-700 w-48">Category</th>
+                      <th className="py-2 px-3 border-r border-zinc-700 w-64">Field</th>
+                      <th className="py-2 px-3">Requester Response</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800 bg-white dark:bg-zinc-900">
@@ -857,16 +943,13 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
                             : 'bg-zinc-50/80 dark:bg-zinc-800/40'
                         }
                       >
-                        <td className="py-1.5 px-2.5 font-mono text-[11px] text-zinc-400 text-center border-r border-zinc-200 dark:border-zinc-800">
-                          {idx + 4}
-                        </td>
-                        <td className="py-1.5 px-3 font-mono text-[11px] text-zinc-600 dark:text-zinc-400 border-r border-zinc-200 dark:border-zinc-800">
+                        <td className="py-2 px-3 font-mono text-[11px] text-zinc-600 dark:text-zinc-400 border-r border-zinc-200 dark:border-zinc-800">
                           {row.category}
                         </td>
-                        <td className="py-1.5 px-3 font-semibold text-zinc-900 dark:text-zinc-100 bg-zinc-100/70 dark:bg-zinc-800/60 border-r border-zinc-200 dark:border-zinc-800">
+                        <td className="py-2 px-3 font-semibold text-zinc-900 dark:text-zinc-100 bg-zinc-100/70 dark:bg-zinc-800/60 border-r border-zinc-200 dark:border-zinc-800">
                           {row.field}
                         </td>
-                        <td className="py-1.5 px-3 font-medium text-zinc-900 dark:text-zinc-100">
+                        <td className="py-2 px-3 font-medium text-zinc-900 dark:text-zinc-100">
                           {row.value}
                         </td>
                       </tr>
@@ -876,34 +959,31 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
               </div>
             </div>
 
-            {/* Section 1B: Preliminary Checklist Responses */}
+            {/* Section 1B: Preliminary Discovery Responses */}
             <div className="p-4">
               <div className="bg-zinc-900 text-white px-3.5 py-2.5 rounded-t-lg text-xs font-mono font-bold tracking-wide flex flex-wrap items-center justify-between gap-2">
                 <span>
-                  SECTION 1B: PRELIMINARY CHECKLIST RESPONSES
+                  SECTION 1B: PRELIMINARY DISCOVERY RESPONSES ({answeredPrelimCount} ANSWERED QUESTIONS)
                 </span>
                 <span className="text-emerald-400">
-                  {answeredPrelimCount} Responded Queries · Date Generated: {workbookData.dateGenerated}
+                  Date Generated: {workbookData.dateGenerated}
                 </span>
               </div>
               <div className="overflow-x-auto border border-t-0 border-zinc-300 dark:border-zinc-700 rounded-b-lg">
                 <table className="w-full text-left border-collapse text-xs">
                   <thead className="sticky top-0 z-10">
                     <tr className="bg-zinc-800 text-white font-mono text-[11px]">
-                      <th className="py-2.5 px-3 border-r border-zinc-700 min-w-[165px]">
-                        Col A · Stage
+                      <th className="py-2.5 px-3 border-r border-zinc-700 w-56">
+                        Discovery Stage
                       </th>
                       <th className="py-2.5 px-3 border-r border-zinc-700 w-24 text-center">
-                        Col B · Code
+                        Question ID
                       </th>
-                      <th className="py-2.5 px-3 border-r border-zinc-700 min-w-[290px]">
-                        Col C · Preliminary Question
+                      <th className="py-2.5 px-3 border-r border-zinc-700 min-w-[300px]">
+                        Preliminary Discovery Question
                       </th>
-                      <th className="py-2.5 px-3 border-r border-zinc-700 min-w-[320px] bg-emerald-950 text-emerald-200">
-                        Col D · Recorded Response
-                      </th>
-                      <th className="py-2.5 px-3 w-36 text-center">
-                        Col E · Input Format
+                      <th className="py-2.5 px-3 min-w-[340px] bg-emerald-950 text-emerald-200">
+                        Requester Response
                       </th>
                     </tr>
                   </thead>
@@ -926,11 +1006,8 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
                         <td className="py-2.5 px-3 font-semibold text-zinc-900 dark:text-zinc-100 border-r border-zinc-200 dark:border-zinc-800 align-top leading-relaxed">
                           {r.questionText}
                         </td>
-                        <td className="py-2.5 px-3 font-semibold bg-emerald-50/90 dark:bg-emerald-950/30 text-emerald-950 dark:text-emerald-200 border-r border-zinc-200 dark:border-zinc-800 align-top leading-relaxed">
+                        <td className="py-2.5 px-3 font-semibold bg-emerald-50/90 dark:bg-emerald-950/30 text-emerald-950 dark:text-emerald-200 align-top leading-relaxed">
                           {r.selectedResponse}
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-[11px] text-zinc-500 dark:text-zinc-400 text-center align-top">
-                          {r.inputFormat}
                         </td>
                       </tr>
                     ))}
@@ -946,30 +1023,27 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
             <div className="p-4">
               <div className="bg-zinc-900 text-white px-3.5 py-2.5 rounded-t-lg text-xs font-mono font-bold tracking-wide flex flex-wrap items-center justify-between gap-2">
                 <span>
-                  SECTION 2A: DETAILED SECURITY CHECKLIST RESPONSES (M1 – M16)
+                  SECTION 2A: DETAILED SECURITY CHECKLIST RESPONSES ({answeredSecurityCount} ANSWERED CONTROLS)
                 </span>
                 <span className="text-emerald-400">
-                  {answeredSecurityCount} Responded Queries · Date Generated: {workbookData.dateGenerated}
+                  Date Generated: {workbookData.dateGenerated}
                 </span>
               </div>
               <div className="overflow-x-auto border border-t-0 border-zinc-300 dark:border-zinc-700 rounded-b-lg">
                 <table className="w-full text-left border-collapse text-xs">
                   <thead className="sticky top-0 z-10">
                     <tr className="bg-zinc-800 text-white font-mono text-[11px]">
-                      <th className="py-2.5 px-3 border-r border-zinc-700 min-w-[165px]">
-                        Col A · Checklist Section
+                      <th className="py-2.5 px-3 border-r border-zinc-700 w-56">
+                        Security Domain
                       </th>
                       <th className="py-2.5 px-3 border-r border-zinc-700 w-24 text-center">
-                        Col B · Code
+                        Question ID
                       </th>
-                      <th className="py-2.5 px-3 border-r border-zinc-700 min-w-[290px]">
-                        Col C · Security Question
+                      <th className="py-2.5 px-3 border-r border-zinc-700 min-w-[300px]">
+                        Security Control Question
                       </th>
-                      <th className="py-2.5 px-3 border-r border-zinc-700 min-w-[320px] bg-emerald-950 text-emerald-200">
-                        Col D · Recorded Response
-                      </th>
-                      <th className="py-2.5 px-3 w-36 text-center">
-                        Col E · Input Format
+                      <th className="py-2.5 px-3 min-w-[340px] bg-emerald-950 text-emerald-200">
+                        Requester Response
                       </th>
                     </tr>
                   </thead>
@@ -992,11 +1066,8 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
                         <td className="py-2.5 px-3 font-semibold text-zinc-900 dark:text-zinc-100 border-r border-zinc-200 dark:border-zinc-800 align-top leading-relaxed">
                           {r.questionText}
                         </td>
-                        <td className="py-2.5 px-3 font-semibold bg-emerald-50/90 dark:bg-emerald-950/30 text-emerald-950 dark:text-emerald-200 border-r border-zinc-200 dark:border-zinc-800 align-top leading-relaxed">
+                        <td className="py-2.5 px-3 font-semibold bg-emerald-50/90 dark:bg-emerald-950/30 text-emerald-950 dark:text-emerald-200 align-top leading-relaxed">
                           {r.selectedResponse}
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-[11px] text-zinc-500 dark:text-zinc-400 text-center align-top">
-                          {r.inputFormat}
                         </td>
                       </tr>
                     ))}
@@ -1009,37 +1080,101 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
             {sar.tables.firewall_rules.length > 0 && (
               <div className="p-4 bg-zinc-50/60 dark:bg-zinc-950/40">
                 <div className="border border-zinc-300 dark:border-zinc-700 rounded-lg overflow-hidden bg-white dark:bg-zinc-900">
-                  <div className="bg-zinc-900 text-white px-3 py-2 text-xs font-mono font-bold">
-                    SECTION 2B: NETWORK FIREWALL MATRIX ({sar.tables.firewall_rules.length} ROWS)
+                  <div className="bg-zinc-900 text-white px-3.5 py-2 text-xs font-mono font-bold">
+                    SECTION 2B: NETWORK &amp; FIREWALL PORT MATRIX ({sar.tables.firewall_rules.length} RULES)
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse text-xs">
                       <thead>
-                        <tr className="bg-zinc-800 text-white font-mono text-[10px]">
-                          <th className="py-1.5 px-2 border-r border-zinc-700">Dir</th>
-                          <th className="py-1.5 px-2.5 border-r border-zinc-700">Source CIDR</th>
-                          <th className="py-1.5 px-2.5 border-r border-zinc-700">Destination CIDR</th>
-                          <th className="py-1.5 px-2 border-r border-zinc-700">Port/Proto</th>
-                          <th className="py-1.5 px-2.5">Purpose</th>
+                        <tr className="bg-zinc-800 text-white font-mono text-[11px]">
+                          <th className="py-2 px-3 border-r border-zinc-700">Environment &amp; Direction</th>
+                          <th className="py-2 px-3 border-r border-zinc-700">Port / Protocol</th>
+                          <th className="py-2 px-3 border-r border-zinc-700">Source IP / CIDR</th>
+                          <th className="py-2 px-3 border-r border-zinc-700">Destination IP / CIDR</th>
+                          <th className="py-2 px-3">Business Purpose</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
                         {sar.tables.firewall_rules.map((f) => (
                           <tr key={f.id}>
-                            <td className="py-1.5 px-2 font-semibold border-r border-zinc-200 dark:border-zinc-800">
-                              {f.direction}
+                            <td className="py-2 px-3 font-semibold border-r border-zinc-200 dark:border-zinc-800">
+                              {f.environment} ({f.direction})
                             </td>
-                            <td className="py-1.5 px-2.5 font-mono text-[11px] border-r border-zinc-200 dark:border-zinc-800">
+                            <td className="py-2 px-3 font-mono border-r border-zinc-200 dark:border-zinc-800">
+                              {f.port} / {f.protocol}
+                            </td>
+                            <td className="py-2 px-3 font-mono text-[11px] border-r border-zinc-200 dark:border-zinc-800">
                               {f.source}
                             </td>
-                            <td className="py-1.5 px-2.5 font-mono text-[11px] border-r border-zinc-200 dark:border-zinc-800">
+                            <td className="py-2 px-3 font-mono text-[11px] border-r border-zinc-200 dark:border-zinc-800">
                               {f.destination}
                             </td>
-                            <td className="py-1.5 px-2 font-mono border-r border-zinc-200 dark:border-zinc-800">
-                              {f.port}/{f.protocol}
-                            </td>
-                            <td className="py-1.5 px-2.5 text-zinc-600 dark:text-zinc-400">
+                            <td className="py-2 px-3 text-zinc-600 dark:text-zinc-400">
                               {f.purpose}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Section 2C: API Endpoints & System Integrations on Sheet 2 (Only if populated) */}
+            {(sar.tables.api_endpoints.length > 0 || sar.tables.integrations.length > 0) && (
+              <div className="p-4 bg-zinc-50/60 dark:bg-zinc-950/40">
+                <div className="border border-zinc-300 dark:border-zinc-700 rounded-lg overflow-hidden bg-white dark:bg-zinc-900">
+                  <div className="bg-zinc-900 text-white px-3.5 py-2 text-xs font-mono font-bold">
+                    SECTION 2C: API ENDPOINTS &amp; SYSTEM INTEGRATIONS ({sar.tables.api_endpoints.length + sar.tables.integrations.length} ROWS)
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="bg-zinc-800 text-white font-mono text-[11px]">
+                          <th className="py-2 px-3 border-r border-zinc-700">Integration Type</th>
+                          <th className="py-2 px-3 border-r border-zinc-700">Authentication / Channel</th>
+                          <th className="py-2 px-3 border-r border-zinc-700">Endpoint URI / Counterparty System</th>
+                          <th className="py-2 px-3 border-r border-zinc-700">Network Exposure / Data Shared</th>
+                          <th className="py-2 px-3">Classification / Frequency</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                        {sar.tables.api_endpoints.map((a) => (
+                          <tr key={a.id}>
+                            <td className="py-2 px-3 font-semibold border-r border-zinc-200 dark:border-zinc-800">
+                              API Endpoint ({a.method})
+                            </td>
+                            <td className="py-2 px-3 font-mono text-[11px] border-r border-zinc-200 dark:border-zinc-800">
+                              {a.authType}
+                            </td>
+                            <td className="py-2 px-3 font-mono text-[11px] border-r border-zinc-200 dark:border-zinc-800">
+                              {a.name}
+                            </td>
+                            <td className="py-2 px-3 border-r border-zinc-200 dark:border-zinc-800">
+                              {a.exposure}
+                            </td>
+                            <td className="py-2 px-3 text-zinc-600 dark:text-zinc-400">
+                              {a.dataClassification}
+                            </td>
+                          </tr>
+                        ))}
+                        {sar.tables.integrations.map((i) => (
+                          <tr key={i.id}>
+                            <td className="py-2 px-3 font-semibold border-r border-zinc-200 dark:border-zinc-800">
+                              System Integration ({i.direction})
+                            </td>
+                            <td className="py-2 px-3 font-mono text-[11px] border-r border-zinc-200 dark:border-zinc-800">
+                              {i.channel}
+                            </td>
+                            <td className="py-2 px-3 font-semibold border-r border-zinc-200 dark:border-zinc-800">
+                              {i.counterparty}
+                            </td>
+                            <td className="py-2 px-3 border-r border-zinc-200 dark:border-zinc-800">
+                              {i.dataShared}
+                            </td>
+                            <td className="py-2 px-3 text-zinc-600 dark:text-zinc-400">
+                              {i.frequency}
                             </td>
                           </tr>
                         ))}
@@ -1199,7 +1334,7 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
               <div className="flex items-center gap-2 font-bold text-amber-900 dark:text-amber-200">
                 <Lock className="w-4 h-4 text-amber-600 shrink-0" />
                 <span>
-                  Tamperproof Submission Gate Active — Complete All Mandatory Requirements to Unlock Submission:
+                  Submission Checklist Incomplete — Complete All Required Items to Submit:
                 </span>
               </div>
               <ul className="space-y-1.5 pl-6 list-disc font-mono text-[11px]">
@@ -1243,7 +1378,7 @@ export const ReviewAndSubmitView: React.FC<ReviewAndSubmitViewProps> = ({
             <div className="p-3.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-900 dark:text-emerald-200 flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
               <span>
-                <strong>All Tamperproof Gates Passed:</strong> Request Basics, Preliminary Discovery, Mandatory Checklist Controls, and Contradiction Checks are 100% complete.
+                <strong>Ready for Submission:</strong> Request Basics, Preliminary Discovery, Security Checklist Controls, and Consistency Checks are 100% complete.
               </span>
             </div>
           )}

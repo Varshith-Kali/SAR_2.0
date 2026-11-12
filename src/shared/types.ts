@@ -147,6 +147,9 @@ export interface QuestionDefinition {
   setsFacts?: Record<string, string | string[] | boolean>;
   triggersModules?: ModuleCode[];
   glossaryTerms?: string[];
+  parentQuestionId?: string;
+  chainStepLabel?: string;
+  yesNoPrompt?: string;
 }
 
 export type RepeaterTableType = 'servers' | 'firewall_rules' | 'api_endpoints' | 'integrations';

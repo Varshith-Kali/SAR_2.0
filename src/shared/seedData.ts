@@ -135,7 +135,7 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
       P2: 'yes',
       P3: 'major',
       P4: ['ui', 'apis', 'database', 'login_access', 'integrations', 'servers_hosting', 'data_flows', 'reports'],
-      P5: 'hybrid',
+      P5: ['bank_dc', 'bank_aws', 'hybrid'],
       P6: ['production', 'dr', 'uat', 'development'],
       P7: 'vendor_builds_bank_runs',
       P8: ['bank_employees', 'customers', 'corporates_bc', 'partner_vendor_staff', 'privileged_admins'],
@@ -160,25 +160,22 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
       P27: 'yes',
       P28: 'yes_bank_hosted',
       P29: 'yes',
-      P30: 'All settlement microservices deploy in AWS ap-south-1 (Mumbai) with Active-Standby DR in ap-south-2 (Hyderabad) and synchronous ledger reconciliation against Finacle CBS.',
+      P30: ['arch_diagram_ready', 'dfd_api_sequence_ready', 'vapt_sast_scheduled', 'standard_release_no_exceptions'],
     },
     detailedAnswers: {
-      M1_Q1: 'tier_1',
       M1_Q2: 'yes_automated',
       M1_Q3: 'strict_csp_hsts',
       M1_Q4: 'microservices_strict_env_sep',
       M2_Q1: 'oidc_saml_sso',
       M2_Q2: 'cyberark_vault',
-      M2_Q3:
-        'Privileged admin actions require Maker-Checker dual approval in ServiceNow, enforced via CyberArk PAM jump-hosts with hardware FIDO2 MFA and full keystroke/video session recording forwarded to SOC SIEM.',
+      M2_Q3: 'rbac_maker_checker_pam_recorded',
       M2_Q4: 'ciam_device_mfa',
       M2_Q5: 'argon2_mfa_lockout',
       M2_Q6: 'captcha_lockout_15m_single_session',
       M2_Q7: 'automated_iga_scim_quarterly_uar',
       M2_Q8: 'lockout_5_pwd_policy_single_session_15m',
       M3_Q1: 'three_tier_segmented',
-      M3_Q2:
-        'External customer and merchant traffic enters via Akamai Prolexic DDoS & WAF -> DMZ Enterprise API Gateway (TLS 1.3 + mTLS) -> Internal App Subnet (EKS Settlement Pods) -> Isolated Data Subnet (RDS Aurora PostgreSQL & Finacle CBS via Direct Connect).',
+      M3_Q2: 'hop_by_hop_tls_waf_app_db',
       M4_Q1: 'aes256_cmk',
       M4_Q2: 'synthetic_and_masked',
       M4_Q3: 'tls13_jws_payload',
@@ -196,8 +193,8 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
       M5_Q2: 'yes_gateway_and_app',
       M5_Q3: 'jdbc_tls_readonly_view',
       M5_Q4: 'bank_smtp_dlp_relay',
-      M5_Q5: 'ISO8583 / ISO20022 financial messages wrapped inside mutually authenticated TLS 1.3 channels with strict length-prefix framing and hardware HSM MAC verification.',
-      M5_Q6: 'All inbound partner API calls terminate on the DMZ Enterprise API Gateway with mTLS client certificate pinning.',
+      M5_Q5: 'custom_proto_tls_tunnel_schema_validated',
+      M5_Q6: 'direct_api_mtls_waf_ip_allowlist',
       M5_Q7: 'jwe_mle_kms_versioned',
       M5_Q8: 'realtime_api_gw_vault_secrets',
       M6_Q1: 'sftp_sshkey_pgp',
@@ -246,8 +243,7 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
       M15_Q2: 'read_only_rag',
       M15_Q3: 'enterprise_zero_retention_signed',
       M16_Q1: 'yes_siem_integrated',
-      M16_Q2:
-        'Active-Standby multi-region DR between AWS Mumbai (ap-south-1) and AWS Hyderabad (ap-south-2) with RPO <= 15 mins and RTO <= 90 mins. Immutable S3 Object-Lock backups verified via bi-annual automated DR failover drills.',
+      M16_Q2: 'dr_multi_region_immutable_backups_bi_annual',
       M16_Q3: 'active_active_ha_sync_pam_logs',
     },
   },
@@ -274,7 +270,7 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
       P2: 'yes',
       P3: 'major',
       P4: ['apis', 'database', 'integrations', 'servers_hosting', 'reports'],
-      P5: 'bank_dc',
+      P5: ['bank_dc'],
       P6: ['production', 'dr', 'uat'],
       P7: 'vendor_builds_bank_runs',
       P8: ['bank_employees', 'partner_vendor_staff', 'privileged_admins'],
@@ -299,22 +295,19 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
       P27: 'yes',
       P28: 'no',
       P29: 'yes',
-      P30: 'Strictly scoped to PCI-DSS v4.0 CDE VLANs with zero cleartext PAN outside Thales HSM boundary.',
+      P30: ['arch_diagram_ready', 'dfd_api_sequence_ready', 'vapt_sast_scheduled'],
     },
     detailedAnswers: {
-      M1_Q1: 'tier_1',
       M1_Q2: 'yes_automated',
       M1_Q3: 'strict_csp_hsts',
       M1_Q4: 'three_tier_monolith_env_sep',
       M2_Q1: 'pam_bastion_sso',
       M2_Q2: 'cyberark_vault',
-      M2_Q3:
-        'All CDE administrative sessions require dual-custodian approval in CyberArk PAM, hardware token MFA, and full session recording retained for 365 days.',
+      M2_Q3: 'rbac_maker_checker_pam_recorded',
       M2_Q7: 'automated_iga_scim_quarterly_uar',
       M2_Q8: 'lockout_5_pwd_policy_single_session_15m',
       M3_Q1: 'three_tier_segmented',
-      M3_Q2:
-        'Partner clearing batches enter Partner DMZ over IPsec VPN -> Malware & PGP verification -> Internal MFT Pull into App Zone -> Tokenized lookup against CardVault HSM in PCI CDE Zone.',
+      M3_Q2: 'hop_by_hop_tls_waf_app_db',
       M4_Q1: 'aes256_cmk',
       M4_Q2: 'synthetic_and_masked',
       M4_Q3: 'tls13_jws_payload',
@@ -348,8 +341,7 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
       M12_Q3: 'partner_dmz_ipsec_nat',
       M12_Q4: 'standard_ports_only_scoped',
       M16_Q1: 'yes_siem_integrated',
-      M16_Q2:
-        'Synchronous SAN replication to Hyderabad DR CDE cluster with automated quarterly switchover drills and air-gapped tape/object-lock backups.',
+      M16_Q2: 'dr_active_passive_encrypted_replication',
       M16_Q3: 'active_active_ha_sync_pam_logs',
     },
   },
@@ -376,7 +368,7 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
       P2: 'yes',
       P3: 'major',
       P4: ['ui', 'apis', 'login_access', 'integrations', 'data_flows'],
-      P5: 'hybrid',
+      P5: ['bank_dc', 'other_cloud', 'hybrid'],
       P6: ['production', 'dr', 'uat', 'development'],
       P7: 'in_house',
       P8: ['bank_employees', 'customers', 'partner_vendor_staff', 'privileged_admins'],
@@ -401,25 +393,22 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
       P27: 'no',
       P28: 'yes_bank_hosted',
       P29: 'yes',
-      P30: 'IAM platform hosted on Azure Commercial (Central India region) with ExpressRoute Private Peering to Bank Mumbai DC. DR in Azure South India. All customer identity data residency restricted to India regions per DPDP Act.',
+      P30: ['arch_diagram_ready', 'dfd_api_sequence_ready', 'vapt_sast_scheduled', 'standard_release_no_exceptions'],
     },
     detailedAnswers: {
-      M1_Q1: 'tier_1',
       M1_Q2: 'yes_automated',
       M1_Q3: 'strict_csp_hsts',
       M1_Q4: 'microservices_strict_env_sep',
       M2_Q1: 'oidc_saml_sso',
       M2_Q2: 'cyberark_vault',
-      M2_Q3:
-        'Privileged IAM admin actions require dual-custodian Maker-Checker approval via CyberArk PAM with hardware FIDO2 MFA, 365-day full keystroke and screen-capture session recording forwarded to SOC SIEM.',
+      M2_Q3: 'rbac_maker_checker_pam_recorded',
       M2_Q4: 'ciam_device_mfa',
       M2_Q5: 'argon2_mfa_lockout',
       M2_Q6: 'captcha_lockout_15m_single_session',
       M2_Q7: 'automated_iga_scim_quarterly_uar',
       M2_Q8: 'lockout_5_pwd_policy_single_session_15m',
       M3_Q1: 'three_tier_segmented',
-      M3_Q2:
-        'Customer CIAM traffic enters via Azure Front Door WAF → Okta CIAM tenant (Azure Commercial, Central India) → Azure Private Endpoint → Bank ExpressRoute → On-premises AD hybrid connector. Internal workforce SSO traverses corporate LAN only — no internet exposure.',
+      M3_Q2: 'hop_by_hop_tls_waf_app_db',
       M4_Q1: 'aes256_cmk',
       M4_Q2: 'synthetic_and_masked',
       M4_Q3: 'tls13_jws_payload',
@@ -459,8 +448,7 @@ const SAMPLE_SCENARIO_VARIANTS: SampleScenarioVariant[] = [
       M15_Q1: 'private_llm_guardrails',
       M15_Q2: 'read_only_rag',
       M16_Q1: 'yes_siem_integrated',
-      M16_Q2:
-        'Active-Standby DR between Azure Central India and Azure South India with RPO <= 30 mins and RTO <= 2 hours. Automated bi-annual DR failover drills and immutable geo-redundant backup of all identity stores.',
+      M16_Q2: 'dr_multi_region_immutable_backups_bi_annual',
       M16_Q3: 'active_active_ha_sync_pam_logs',
     },
   },
@@ -740,8 +728,8 @@ export function createPopulatedSampleSARSession(
     sectionRevisions: { basics: 1, preliminary: 1 },
     createdAt: now,
     updatedAt: now,
-    lastActiveScreen: 'modules',
-    lastActiveStage: 4,
+    lastActiveScreen: 'basics',
+    lastActiveStage: 1,
     lastActiveModule: 'M1',
     basics: {
       projectName: variant.projectName,
@@ -951,6 +939,23 @@ export function loadBrowserSessionForRequester(
           sanitized.ownerEmail = '';
           if (snowTicket && !sanitized.basics.ticketNo) {
             sanitized.basics.ticketNo = sanitizeString(snowTicket, 20);
+          } else if (!sanitized.basics.ticketNo && sanitized.basics.projectName?.trim()) {
+            sanitized.basics.ticketNo = 'RITM0094821';
+          }
+          if (sanitized.answers) {
+            const validIds = new Set(DEFAULT_DEFINITION_VERSION.questions.map((q) => q.id));
+            for (const ansKey of Object.keys(sanitized.answers)) {
+              if (
+                !validIds.has(ansKey) &&
+                !ansKey.endsWith('_FOLLOWUPS') &&
+                !ansKey.endsWith('_THREADS')
+              ) {
+                delete sanitized.answers[ansKey];
+              }
+            }
+          }
+          if (sanitized.answers?.P5 && typeof sanitized.answers.P5.value === 'string') {
+            sanitized.answers.P5.value = [sanitized.answers.P5.value];
           }
           sanitized.evaluation = evaluateSAR(
             sanitized.answers,

@@ -15,7 +15,6 @@ server.js
 # Platform & workspace metadata
 .aistudio/
 public/assets/aistudio/
-metadata.json
 bun.lock
 pnpm-workspace.yaml
 

@@ -358,6 +358,7 @@ export function evaluateCondition(
         return true;
       }
       case 'isUnknown': {
+        if (Array.isArray(targetVal)) return targetVal.length === 0 || targetVal.includes('not_sure');
         return targetVal === undefined || targetVal === null || targetVal === '' || targetVal === 'not_sure';
       }
       case 'equals': {
@@ -556,6 +557,134 @@ export function evaluateSAR(
     }
   }
 
+  // Propagate Side-by-Side User × Platform Thread Matrix (P8_THREADS / P_USER_THREADS) selections into facts & module triggers
+  const rawUserThreads =
+    getStoredAnswerValue(answersInput, 'P8_THREADS') ||
+    getStoredAnswerValue(answersInput, 'P_USER_THREADS') ||
+    effectiveAnswers['P8_THREADS'] ||
+    effectiveAnswers['P_USER_THREADS'];
+  const activeP8Users = Array.isArray(effectiveAnswers['P8'])
+    ? (effectiveAnswers['P8'] as string[])
+    : [];
+  if (
+    rawUserThreads &&
+    typeof rawUserThreads === 'object' &&
+    !Array.isArray(rawUserThreads) &&
+    activeP8Users.length > 0
+  ) {
+    const threadRecord = rawUserThreads as Record<
+      string,
+      {
+        platform?: string;
+        accessScope?: string;
+        networkHow?: string;
+        authMechanism?: string;
+      }
+    >;
+    for (const userTypeId of activeP8Users) {
+      if (userTypeId === 'none_headless') continue;
+      const tEntry = threadRecord[userTypeId];
+      if (!tEntry || typeof tEntry !== 'object') continue;
+      if (tEntry.platform === 'mobile_app') {
+        addFact('how_interaction', 'mobile_app');
+        triggerModule('M14', `User Thread (${userTypeId}) → Mobile Application`);
+        triggerQuestion('M14_Q1', `User Thread (${userTypeId}) → Mobile Application`);
+      } else if (tEntry.platform === 'web_browser') {
+        addFact('how_interaction', 'web_browser');
+        triggerQuestion('M1_Q3', `User Thread (${userTypeId}) → Web Browser`);
+      } else if (tEntry.platform === 'desktop_client' || tEntry.platform === 'desktop_app') {
+        addFact('how_interaction', 'desktop_client');
+        triggerModule('M14', `User Thread (${userTypeId}) → Desktop Client`);
+        triggerQuestion('M14_Q2', `User Thread (${userTypeId}) → Desktop Client`);
+      } else if (tEntry.platform === 'cli_ssh' || tEntry.platform === 'cli') {
+        addFact('how_interaction', 'cli');
+        triggerModule('M2', `User Thread (${userTypeId}) → CLI / SSH`);
+        triggerQuestion('M2_Q3', `User Thread (${userTypeId}) → CLI / SSH`);
+      }
+      if (tEntry.networkHow === 'internet_public' || tEntry.networkHow === 'internet') {
+        addFact('internet_facing', 'true');
+        triggerModule('M12', `User Thread (${userTypeId}) → Public Internet Access`);
+      }
+    }
+  }
+
+  // Propagate Side-by-Side Connected Application Integration Breakdown (P13_APP_FLOWS)
+  const rawAppFlows =
+    getStoredAnswerValue(answersInput, 'P13_APP_FLOWS') ||
+    effectiveAnswers['P13_APP_FLOWS'];
+  if (rawAppFlows && typeof rawAppFlows === 'object' && !Array.isArray(rawAppFlows) && effectiveAnswers['P13'] !== 'no') {
+    const flowRecord = rawAppFlows as Record<
+      string,
+      {
+        direction?: string;
+        protocol?: string;
+        hostingTarget?: string;
+        encrypted?: string;
+      }
+    >;
+    for (const [appKey, fEntry] of Object.entries(flowRecord)) {
+      if (!fEntry || typeof fEntry !== 'object') continue;
+      if (fEntry.protocol === 'rest_api') {
+        addFact('how_channel', 'rest_api');
+        triggerModule('M5', `Connected App Flow (${appKey}) → REST / SOAP API`);
+        triggerQuestion('M5_Q1', `Connected App Flow (${appKey}) → REST / SOAP API`);
+      } else if (fEntry.protocol === 'file_transfer') {
+        addFact('how_channel', 'file_transfer');
+        triggerModule('M6', `Connected App Flow (${appKey}) → SFTP / File Transfer`);
+        triggerQuestion('M6_Q1', `Connected App Flow (${appKey}) → SFTP / File Transfer`);
+      } else if (fEntry.protocol === 'queues_streams') {
+        addFact('how_channel', 'queues_streams');
+        triggerModule('M7', `Connected App Flow (${appKey}) → Event Stream / Queue`);
+        triggerQuestion('M7_Q1', `Connected App Flow (${appKey}) → Event Stream / Queue`);
+      } else if (fEntry.protocol === 'db_connection') {
+        addFact('how_channel', 'db_connection');
+        triggerModule('M4', `Connected App Flow (${appKey}) → Direct DB Link`);
+        triggerModule('M5', `Connected App Flow (${appKey}) → Direct DB Link`);
+        triggerQuestion('M5_Q3', `Connected App Flow (${appKey}) → Direct DB Link`);
+      }
+      if (fEntry.hostingTarget === 'external_vendor') {
+        addFact('external_party', 'true');
+        addFact('boundary_crossing', 'yes');
+        triggerModule('M3', `Connected App Flow (${appKey}) → External / Vendor Cloud`);
+        triggerModule('M12', `Connected App Flow (${appKey}) → External / Vendor Cloud`);
+      }
+    }
+  }
+
+  // Propagate Side-by-Side Per-Application Hosting Breakdown (P5_APP_HOSTING)
+  const rawAppHosting =
+    getStoredAnswerValue(answersInput, 'P5_APP_HOSTING') ||
+    effectiveAnswers['P5_APP_HOSTING'];
+  if (rawAppHosting && typeof rawAppHosting === 'object' && !Array.isArray(rawAppHosting)) {
+    const hostRecord = rawAppHosting as Record<
+      string,
+      {
+        platform?: string;
+        role?: string;
+        zone?: string;
+      }
+    >;
+    for (const [appKey, hEntry] of Object.entries(hostRecord)) {
+      if (!hEntry || typeof hEntry !== 'object') continue;
+      if (hEntry.platform === 'bank_aws' || hEntry.platform === 'other_cloud') {
+        addFact('where_hosting', hEntry.platform);
+        triggerModule('M11', `Application Hosting (${appKey}) → Cloud Platform`);
+      } else if (hEntry.platform === 'vendor_saas') {
+        addFact('where_hosting', 'vendor_saas');
+        addFact('vendor_involved', 'true');
+        triggerModule('M8', `Application Hosting (${appKey}) → Vendor SaaS`);
+      } else if (hEntry.platform === 'hybrid') {
+        addFact('where_hosting', 'hybrid');
+        triggerModule('M10', `Application Hosting (${appKey}) → Hybrid DC + Cloud`);
+        triggerModule('M11', `Application Hosting (${appKey}) → Hybrid DC + Cloud`);
+        triggerModule('M12', `Application Hosting (${appKey}) → Hybrid DC + Cloud`);
+      }
+      if (hEntry.zone === 'dmz_zone' || hEntry.zone === 'cde_isolated') {
+        triggerModule('M12', `Application Hosting (${appKey}) → ${hEntry.zone === 'dmz_zone' ? 'DMZ Zone' : 'Isolated CDE Zone'}`);
+      }
+    }
+  }
+
   // Also check repeater tables for facts (e.g. firewall rule to external IP sets new_trust_boundary_crossing)
   if (tables) {
     const hasPublicFirewallRule = tables.firewall_rules.some(
@@ -582,6 +711,11 @@ export function evaluateSAR(
 
   // Step 2: Compute Derived Flags in DAG Dependency Order
   const p5 = effectiveAnswers['P5'];
+  const p5Arr = Array.isArray(p5)
+    ? p5.map(String)
+    : typeof p5 === 'string' && p5
+    ? [p5]
+    : [];
   const p7 = effectiveAnswers['P7'];
   const p8 = (effectiveAnswers['P8'] as string[]) || [];
   const p10 = (effectiveAnswers['P10'] as string[]) || [];
@@ -598,10 +732,19 @@ export function evaluateSAR(
   const p28 = effectiveAnswers['P28'];
   const p29 = effectiveAnswers['P29'];
 
-  flags.on_prem_hosted = p5 === 'bank_dc' || p5 === 'hybrid' || p5 === 'not_decided';
-  flags.cloud_hosted =
-    p5 === 'bank_aws' || p5 === 'other_cloud' || p5 === 'vendor_saas' || p5 === 'hybrid' || p5 === 'not_decided';
-  flags.hybrid = p5 === 'hybrid' || (flags.on_prem_hosted && flags.cloud_hosted && p5 !== 'not_decided');
+  flags.on_prem_hosted =
+    p5Arr.includes('bank_dc') || p5Arr.includes('hybrid') || p5Arr.includes('not_decided');
+  flags.cloud_hosted = p5Arr.some((v) =>
+    ['bank_aws', 'other_cloud', 'vendor_saas', 'hybrid', 'not_decided'].includes(v)
+  );
+  flags.hybrid =
+    p5Arr.includes('hybrid') ||
+    (flags.on_prem_hosted && flags.cloud_hosted && !p5Arr.includes('not_decided'));
+  if (flags.hybrid && !p5Arr.includes('hybrid')) {
+    triggerModule('M10', 'P5 multi-select combines On-Premises DC + Cloud hosting (Hybrid)');
+    triggerModule('M11', 'P5 multi-select combines On-Premises DC + Cloud hosting (Hybrid)');
+    triggerModule('M12', 'P5 multi-select combines On-Premises DC + Cloud hosting (Hybrid)');
+  }
 
   flags.internet_facing =
     (Array.isArray(p10) && p10.includes('internet')) ||
@@ -609,7 +752,7 @@ export function evaluateSAR(
 
   flags.vendor_involved =
     (facts['vendor_involved']?.includes('true') ?? false) ||
-    p5 === 'vendor_saas' ||
+    p5Arr.includes('vendor_saas') ||
     p7 === 'vendor_builds_bank_runs' ||
     p7 === 'vendor_builds_and_runs' ||
     p18 === 'yes' ||
@@ -1094,14 +1237,13 @@ export function evaluateSAR(
     });
   }
 
-  // Contradiction 4: Production hosting in scope without DR environment on Tier 1/2 app
+  // Contradiction 4: Production hosting in scope without DR environment on new or sensitive/external app
   const p6 = (effectiveAnswers['P6'] as string[]) || [];
-  const m1q1 = effectiveAnswers['M1_Q1'];
   if (
     Array.isArray(p6) &&
     p6.includes('production') &&
     !p6.includes('dr') &&
-    (m1q1 === 'tier_1' || m1q1 === 'tier_2' || p1.includes('new_app'))
+    (p1.includes('new_app') || flags.pii_or_pci_in_scope || flags.internet_facing)
   ) {
     contradictions.push({
       id: 'CONTRA_PROD_WITHOUT_DR',
@@ -1110,7 +1252,7 @@ export function evaluateSAR(
       title: 'Production environment in scope without Disaster Recovery (DR)',
       explanation:
         'Production is selected without Disaster Recovery (DR). Bank resilience standards require a DR topology for new and critical production systems.',
-      involvedQuestions: ['P6', 'M1_Q1'],
+      involvedQuestions: ['P6', 'P1'],
       moduleCode: 'M16',
     });
   }
@@ -1558,8 +1700,10 @@ export function evaluateFlowGates(
     missingBasicsFields.push('At least 1 Connected Application (CMDB or Custom)');
   }
   const ticketTrimmed = (b.ticketNo || '').trim();
-  if (ticketTrimmed !== '' && !/^(INC|RITM|CHG|REQ|SAR)[0-9]{5,10}$/i.test(ticketTrimmed)) {
-    missingBasicsFields.push('Valid ServiceNow Ticket Format (or leave blank)');
+  if (!ticketTrimmed) {
+    missingBasicsFields.push('ServiceNow Ticket');
+  } else if (!/^(INC|RITM|CHG|REQ|SAR)[0-9]{5,10}$/i.test(ticketTrimmed)) {
+    missingBasicsFields.push('Valid ServiceNow Ticket Format (e.g. RITM0094821)');
   }
   if (detectLiveSecretInText(b.projectName) || detectLiveSecretInText(b.businessRequirement)) {
     missingBasicsFields.push('Remove flagged secrets or injection patterns in Request Basics');
